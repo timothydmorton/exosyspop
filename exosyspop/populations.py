@@ -83,17 +83,17 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
 
     """
     #parameters for binary population (for period in years)
-    param_names = ['fB', 'gamma', 'qRmin', 'mu_logp', 'sig_logp']
-    default_params = [0.4, 0.3, 0.1, np.log10(250), 2.3]
+    param_names = ('fB', 'gamma', 'qRmin', 'mu_logp', 'sig_logp')
+    default_params = (0.4, 0.3, 0.1, np.log10(250), 2.3)
 
     # Physical and orbital parameters that can be accessed.
-    physical_props = ['mass_A', 'radius_A',
-                      'mass_B', 'radius_B', 'flux_ratio']
+    physical_props = ('mass_A', 'radius_A',
+                      'mass_B', 'radius_B', 'flux_ratio')
 
-    orbital_props = ['period', 'ecc', 'w', 'inc', 'a', 'aR',
+    orbital_props = ('period', 'ecc', 'w', 'inc', 'a', 'aR',
                       'b_pri', 'b_sec', 'k', 'tra', 'occ',
                       'd_pri', 'd_sec', 'T14_pri', 'T14_sec',
-                      'T23_pri', 'T23_sec']
+                      'T23_pri', 'T23_sec')
                      
     # property dictionary mapping to DataFrame column
     prop_columns = {}
@@ -112,7 +112,8 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
     def __init__(self, stars, params=None, 
                  ic=DAR, **kwargs):
 
-        self.stars = stars
+        # Copy data, so as to avoid surprises.
+        self.stars = stars.copy()
         self._ic = ic
         self._params = params
 
@@ -150,6 +151,10 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
             self._not_calculated.pop(i)
         except ValueError:
             pass
+        
+    def _remove_prop(self, prop):
+        self.stars.loc[:, prop] = np.nan
+        self._not_calculated.append(prop)
 
     @property
     def params(self):
@@ -165,7 +170,7 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
 
     def set_params(self, **kwargs):
         if self._params is None:
-            self._params = self.default_params
+            self._params = list(self.default_params)
         for k,v in kwargs.items():
             self._params[self.param_names.index(k)] = v
 
@@ -279,10 +284,13 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
         a = semimajor(period, self.mass_A + self.mass_B) * AU
         aR = a / (self.radius_A * RSUN)
         if geom_only:
-            for c in ['period', 'ecc',
-                      'w', 'inc', 'a', 'aR']:
+            # add the above properties
+            for c in self.orbital_props[:6]:
                 self.stars.loc[:, c] = eval(c)
                 self._mark_calculated(c)
+            # take away the others.
+            for c in self.orbital_props[6:]:
+                self._remove_prop(c)
             return
 
 
@@ -322,16 +330,14 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
                 F2 = self.flux_ratio[i]
                 d_sec[i] = 1 - (1 + F2*f)/(1+F2)
 
-        stars = self.stars.copy()
-        for var in self.orbital_props:
-            stars.loc[:, var] = eval(var)
-
-        self.stars = stars
+        for c in self.orbital_props:
+            self.stars.loc[:, c] = eval(c)
+            self._mark_calculated(c)
 
     def _prepare_geom(self, new=False):
-        if 'radius_B' not in self.stars or new:
+        if 'radius_B' in self._not_calculated or new:
             self._generate_binaries()
-        if 'period' not in self.stars or new:
+        if 'period' in self._not_calculated or new:
             self._generate_orbits(geom_only=True)
 
     def get_pgeom(self, query=None, new=False, sec=False):
@@ -350,7 +356,11 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
 
     def get_necl(self, query=None, new=False):
         """
-        Returns expected number of geometrically eclipsing systems.
+        Supposed to return expected number of geometrically eclipsing systems.
+
+        *NOT CORRECT, DO NOT USE*
+
+        Fun problem to take a stab at sometime, though...
         """
         self._prepare_geom(new=new)
         if query is not None:
@@ -363,6 +373,8 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
         sec = ((df.radius_A + df.radius_B)*RSUN/(df.a) *
                (1 - df.ecc*np.sin(df.w))/(1 - df.ecc**2))
 
+        # Trying to fudge the probability of pri | sec.
+        #  Don't think I did it right.
         bad = np.isnan(df.radius_B)
         pri[bad] = 0
         sec[bad] = 0
@@ -372,7 +384,8 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
         return np.maximum(pri, sec).sum()
         
 
-    def observe(self, query=None, fit_trap=False, new=False):
+    def observe(self, query=None, fit_trap=False, new=False,
+                new_orbits=False, regr_trap=False):
         """
         Returns catalog of the following observable quantities:
           
@@ -403,14 +416,16 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
         if new:
             self._generate_binaries()
             self._generate_orbits()
+        elif new_orbits:
+            self._generate_orbits()
 
         # Select only systems with eclipsing (or occulting) geometry
         m = (self.tra | self.occ) & (self.stars.dataspan > 0)
-        cols = self.orbital_props + ['dataspan', 'dutycycle', 'flux_ratio']
+        cols = list(self.orbital_props) + ['dataspan', 'dutycycle', 'flux_ratio']
         if query is not None:
             df = self.stars.loc[m, cols].query(query)
         else:
-            df = self.stars.loc[m, cols]
+            df = self.stars.loc[m, cols].copy()
 
         # Phase of secondary (Hilditch (2001) , Kopal (1959))
         #  Primary is at phase=0
@@ -505,7 +520,10 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
                 catalog.loc[i, 'trap_depth_sec'] = depth_sec
                 catalog.loc[i, 'trap_slope_sec'] = slope_sec
 
-        if self._dur_pipeline is not None:
+        if regr_trap:
+            if self._dur_pipeline is None:
+                self._train_trap()
+
             Xpri = self._get_trap_features(catalog, pri_only=True)
             Xsec = self._get_trap_features(catalog, sec_only=True)
             pri = (catalog.T14_pri.values > 0) & (catalog.d_pri.values > 0)
@@ -615,11 +633,14 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
         self._q_pipeline_score = score
         
     def get_N_observed(self, query=None, N=10000, fit_trap=False,
+                       regr_trap=True, new=False, new_orbits=True,
                        verbose=False):
         df = pd.DataFrame()
         while len(df) < N:
-            df = pd.concat([df, self.observe(query=query, 
-                                             fit_trap=fit_trap)])
+            df = pd.concat([df, self.observe(query=query, new=new,
+                                             new_orbits=new_orbits,
+                                             fit_trap=fit_trap,
+                                             regr_trap=regr_trap)])
             if verbose:
                 print(len(df))
         return df
@@ -652,7 +673,7 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
         """
         N is minimum number of simulated transits to train with.
         """
-        df = self.get_N_observed(query=query, N=N, fit_trap=True)
+        df = self.get_N_observed(query=query, N=N, fit_trap=True, regr_trap=False)
    
         X = self._get_trap_features(df)
         
