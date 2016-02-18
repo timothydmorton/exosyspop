@@ -2,6 +2,11 @@ from __future__ import print_function, division
 
 import numpy as np
 import pandas as pd
+
+# This disables expensive garbage collection calls
+# within python.  Took forever to figure this out.
+pd.set_option('mode.chained_assignment', None)
+
 import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
@@ -43,7 +48,7 @@ class BinaryPopulation(object):
     more computationally intensive steps.  
 
     The first of these regressions is to predict the flux ratio 
-    between the secondary and primary, as well as the mass ratio,
+pd.set_option('mode.chained_assignment', None)    between the secondary and primary, as well as the mass ratio,
     as a function of the other more readily simulated parameters.
     Enabling this is that the population simulation is parameterized
     in order to directly infer the *radius ratio* (`qR`) distribution, 
@@ -73,7 +78,7 @@ class BinaryPopulation(object):
 
     After training, the :function:`BinaryPopulation.observe` function
     will generate an observed population of eclipsing systems, complete
-    with trapezoidal shape parameters in ~0.3 seconds, for a primary
+    with trapezoidal shape parameters in < 1s, for a primary
     population of ~30,000 target stars.
 
     """
@@ -96,6 +101,9 @@ class BinaryPopulation(object):
     # Minimum radius allowed, in Rsun.
     min_radius = 0.11
 
+    # Minimum orbital period allowed.
+    min_period = 1.
+
     # Band in which eclipses are observed,
     # and exposure integration time.
     band = 'Kepler'
@@ -108,8 +116,15 @@ class BinaryPopulation(object):
         self._ic = ic
         self._params = params
 
+        # Put the appopriate renamed columns in
         for k,v in self.prop_columns.items():
-            self.stars.loc[:, k] = self.stars.loc[:, v]
+            self.stars.loc[:, k] = self.stars[v]
+
+        # Create all the columns that will be filled later
+        self._not_calculated = [c for c in self.physical_props +
+                                self.orbital_props if c not in self.stars]
+        for c in self._not_calculated:
+            self.stars.loc[:, c] = np.nan
 
         self.set_params(**kwargs)
 
@@ -119,6 +134,22 @@ class BinaryPopulation(object):
         self._logd_pipeline = None
         self._dur_pipeline = None
         self._slope_pipeline = None
+
+    def __getattr__(self, name):
+        if name in self._not_calculated:
+            if name in self.physical_props:
+                self._generate_binaries()
+            elif name in self.orbital_props:
+                self._generate_orbits()
+        return self.stars[name].values
+
+
+    def _mark_calculated(self, prop):
+        try:
+            i = self._not_calculated.index(prop)
+            self._not_calculated.pop(i)
+        except ValueError:
+            pass
 
     @property
     def params(self):
@@ -148,17 +179,6 @@ class BinaryPopulation(object):
     def N(self):
         return len(self.stars)
 
-    def __getattr__(self, name):
-        if name in self.stars:
-            return self.stars[name].values
-        elif name in self.physical_props:
-            if name not in self.stars:
-                self._generate_binaries()
-        elif name in self.orbital_props:
-            if name not in self.stars:
-                self._generate_orbits()
-        return self.stars[name].values
-
     def _assign_ages(self):
         # Stellar catalog doesn't have ages, so let's make them up.
         #  ascontiguousarray makes ic calls faster.
@@ -183,22 +203,17 @@ class BinaryPopulation(object):
         N = self.N
         fB, gamma, qRmin, _, _ = self.params
 
-        ## Start fresh.
-        #for c in self.physical_props:
-        #    if c in self.stars and c not in self.prop_columns:
-        #        if c=='radius_A':
-        #            continue
-        #        del self.stars[c]
-
         b = np.random.random(N) < fB
 
         self._assign_ages()
 
         # Simulate primary radius (unless radius_A provided)
-        if 'radius_A' not in self.stars:
+        if 'radius_A' in self._not_calculated:
             self.stars.loc[:, 'radius_A'] = self.ic.radius(self.mass_A, 
                                                            self.age, 
                                                            self.feh)
+            self._mark_calculated('radius_A')
+
         R1 = self.radius_A[b]
 
         # Simulate secondary radii (not masses!)
@@ -222,38 +237,52 @@ class BinaryPopulation(object):
         # Calculate q->mass_B from trained regression
         X = np.array([M1, R1, qR[b], age, feh, flux_ratio]).T
         q = self._q_pipeline.predict(X)
-        M2 = q*M1
+        M2 = np.zeros(N)
+        M2[b] = q*M1
+        M2[~b] = np.nan
 
-        self.stars.loc[b, 'mass_B'] = M2
-        self.stars.loc[~b, 'mass_B'] = np.nan
-        self.stars.loc[b, 'radius_B'] = R2
-        self.stars.loc[~b, 'radius_B'] = np.nan
-        self.stars.loc[b, 'flux_ratio'] = flux_ratio
-        self.stars.loc[~b, 'flux_ratio'] = 0.
+        # Recreate arrays to avoid pandas weirdness
+        radius_B = np.zeros(N)
+        radius_B[b] = R2
+        radius_B[~b] = np.nan
+
+        fluxrat = np.zeros(N)
+        fluxrat[b] = flux_ratio
+        
+        self.stars.loc[:, 'mass_B'] = M2
+        self.stars.loc[:, 'radius_B'] = radius_B
+        self.stars.loc[:, 'flux_ratio'] = fluxrat
+        for c in ['mass_B', 'radius_B', 'flux_ratio']:
+            self._mark_calculated(c)
 
     def _generate_orbits(self, geom_only=False):
         _, _, _, mu_logp, sig_logp = self.params
 
-        ## Start fresh.
-        #for c in self.orbital_props:
-        #    if c in self.stars:
-        #        del self.stars[c]
-
         N = self.N
 
+        
+        # Generate periods, but 
+        #  don't let anything shorter than minimum period
         period = 10**(np.random.normal(np.log10(mu_logp), sig_logp, size=N)) * 365.25
+        bad = period < self.min_period
+        nbad = bad.sum()
+        while nbad > 0:
+            period[bad] = 10**(np.random.normal(np.log10(mu_logp), 
+                                                sig_logp, size=nbad)) * 365.25
+            bad = period < self.min_period
+            nbad = bad.sum()
+
+        # Rest of the orbital parameters
         ecc = draw_eccs(N, period)
         w = np.random.random(N) * 2 * np.pi
         inc = np.arccos(np.random.random(N))        
         a = semimajor(period, self.mass_A + self.mass_B) * AU
         aR = a / (self.radius_A * RSUN)
         if geom_only:
-            self.stars.loc[:, 'period'] = period
-            self.stars.loc[:, 'ecc'] = ecc
-            self.stars.loc[:, 'w'] = w
-            self.stars.loc[:, 'inc'] = inc
-            self.stars.loc[:, 'a'] = a
-            self.stars.loc[:, 'aR'] = aR
+            for c in ['period', 'ecc',
+                      'w', 'inc', 'a', 'aR']:
+                self.stars.loc[:, c] = eval(c)
+                self._mark_calculated(c)
             return
 
 
@@ -337,6 +366,8 @@ class BinaryPopulation(object):
         bad = np.isnan(df.radius_B)
         pri[bad] = 0
         sec[bad] = 0
+        pri = np.clip(pri, 0, 1)
+        sec = np.clip(pri, 0, 1)
 
         return np.maximum(pri, sec).sum()
         
