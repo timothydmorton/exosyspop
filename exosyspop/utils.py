@@ -1,6 +1,7 @@
 from __future__ import print_function, division
 import numpy as np
 from astropy import constants as const
+from numba import jit
 
 G = const.G.cgs.value
 MSUN = const.M_sun.cgs.value
@@ -31,6 +32,17 @@ def semimajor(P,mstar=1):
     """Returns semimajor axis in AU given P in days, mstar in solar masses.
     """
     return ((P*DAY/2/np.pi)**2*G*mstar*MSUN)**(1./3)/AU
+
+def rochelobe(q):
+    """returns r1/a; q = M1/M2"""
+    return 0.49*q**(2./3)/(0.6*q**(2./3) + np.log(1+q**(1./3)))
+
+def withinroche(semimajors,M1,R1,M2,R2,N=1):
+    """
+    Returns boolean array that is True where two stars are within Roche lobe
+    """
+    q = M1/M2
+    return ((R1+R2)*RSUN) > (rochelobe(q)*semimajors*AU)
 
 def Pbg_kepler(Kp, b, r=4):
     """Expected number of BG stars within r" in Kepler field within (Kp, Kp + 10)

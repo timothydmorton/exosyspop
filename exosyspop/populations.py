@@ -3,6 +3,8 @@ from __future__ import print_function, division
 import numpy as np
 import pandas as pd
 
+import logging
+
 # This disables expensive garbage collection calls
 # within python.  Took forever to figure this out.
 pd.set_option('mode.chained_assignment', None)
@@ -23,7 +25,7 @@ from vespa.stars.utils import draw_eccs # this is a function that returns
                                         # for given binary periods.
 from vespa.transit_basic import _quadratic_ld, eclipse_tt, NoEclipseError
 
-from .utils import draw_powerlaw, semimajor
+from .utils import draw_powerlaw, semimajor, rochelobe
 from .utils import G, MSUN, RSUN, AU, DAY
 
 class BinaryPopulation(object):
@@ -82,8 +84,8 @@ class BinaryPopulation(object):
 
     """
     #parameters for binary population (for period in years)
-    param_names = ('fB', 'gamma', 'qRmin', 'mu_logp', 'sig_logp')
-    default_params = (0.4, 0.3, 0.1, np.log10(250), 2.3)
+    param_names = ('fB', 'gamma', 'qRmin', 'mu_logp', 'sig_logp', 'a', 'b')
+    default_params = (0.4, 0.3, 0.1, np.log10(250), 2.3, 0.8, 2.0)
 
     # Physical and orbital parameters that can be accessed.
     physical_props = ('mass_A', 'radius_A',
@@ -109,7 +111,7 @@ class BinaryPopulation(object):
 
     def __init__(self, stars, params=None, 
                  band='Kepler', texp=1626./86400,
-                 ic=DAR, **kwargs):
+                 ic=DAR, ecc_empirical=False, **kwargs):
 
         # Copy data, so as to avoid surprises.
         self.stars = stars.copy()
@@ -117,6 +119,7 @@ class BinaryPopulation(object):
         self._params = params
         self.band = band
         self.texp = texp
+        self.ecc_empirical = ecc_empirical
 
         # Rename appropriate columns
         for k,v in self.prop_columns.items():
@@ -226,7 +229,7 @@ class BinaryPopulation(object):
         Returns feature vector X, and binary mask b
         """
         N = self.N
-        fB, gamma, qmin, _, _ = self.params
+        fB, gamma, qmin, _, _, _, _ = self.params
 
         self._ensure_radius()
 
@@ -247,7 +250,7 @@ class BinaryPopulation(object):
         # Simulate directly from isochrones if desired; 
         # otherwise use regression.
         if use_ic:
-            fB, gamma, qmin, _, _ = self.params
+            fB, gamma, qmin, _, _, _, _ = self.params
             b = np.random.random(N) < fB
         
             self._ensure_radius()
@@ -304,13 +307,12 @@ class BinaryPopulation(object):
         for c in ['mass_B', 'radius_B', 'flux_ratio']:
             self._mark_calculated(c)
 
-    def _generate_orbits(self, geom_only=False):
-        _, _, _, mu_logp, sig_logp = self.params
-
-        N = self.N
-
+    def _sample_period(self, N):
+        """
+        Samples log-normal period distribution.
+        """
+        _, _, _, mu_logp, sig_logp, _, _ = self.params
         
-        # Generate periods, but 
         #  don't let anything shorter than minimum period
         period = 10**(np.random.normal(np.log10(mu_logp), sig_logp, size=N)) * 365.25
         bad = period < self.min_period
@@ -321,12 +323,54 @@ class BinaryPopulation(object):
             bad = period < self.min_period
             nbad = bad.sum()
 
-        # Rest of the orbital parameters
-        ecc = draw_eccs(N, period)
+        return period 
+    
+    def _sample_ecc(self, N):
+        """
+        Return N samples from eccentricity distribution
+        """
+        _, _, _, _, _, a, b = self.params
+
+        ecc = np.random.beta(a,b,N)
+        return ecc
+
+    def _generate_orbits(self, geom_only=False):
+        N = self.N
+
+        mass_A = self.mass_A
+        mass_B = self.mass_B
+        radius_A = self.radius_A
+        radius_B = self.radius_B
+
+        # draw orbital parameters
+        period = self._sample_period(N)
+
+        # if using empirical eccentricity distribution,
+        # do so, otherwise sample from distribution.
+        if self.ecc_empirical:
+            ecc = draw_eccs(N, period)
+        else:
+            ecc = self._sample_ecc(N)
+        a = semimajor(period, mass_A + mass_B) * AU
+
+        # Here, crude hack for "circularization":
+        # If orbit implies that periastron is within 3*roche radius,
+        # then redraw eccentricity from a tight rayleigh distribution.
+        # If still too close, assign e=0.
+        q = mass_B/mass_A
+        peri = a*(1-ecc)
+        tooclose = (radius_A + radius_B)*RSUN > 3*rochelobe(1./q)*peri
+        ecc[tooclose] = np.random.rayleigh(0.03)
+        logging.debug('{} orbits assigned to ecc=rayleigh(0.03)'.format(tooclose.sum()))
+        peri = a*(1-ecc)
+        tooclose = (radius_A + radius_B)*RSUN > 3*rochelobe(1./q)*peri
+        ecc[tooclose] = 0.
+        logging.debug('{} orbits assigned to ecc=0'.format(tooclose.sum()))
+        
+
         w = np.random.random(N) * 2 * np.pi
         inc = np.arccos(np.random.random(N))        
-        a = semimajor(period, self.mass_A + self.mass_B) * AU
-        aR = a / (self.radius_A * RSUN)
+        aR = a / (radius_A * RSUN)
         if geom_only:
             # add the above properties
             for c in self.orbital_props[:6]:
@@ -339,24 +383,24 @@ class BinaryPopulation(object):
 
 
         # Determine closest approach
-        b_pri = a*np.cos(inc)/(self.radius_A*RSUN) * (1-ecc**2)/(1 + ecc*np.sin(w))
-        b_sec = a*np.cos(inc)/(self.radius_A*RSUN) * (1-ecc**2)/(1 - ecc*np.sin(w))
+        b_pri = a*np.cos(inc)/(radius_A*RSUN) * (1-ecc**2)/(1 + ecc*np.sin(w))
+        b_sec = a*np.cos(inc)/(radius_A*RSUN) * (1-ecc**2)/(1 - ecc*np.sin(w))
 
-        R_tot = (self.radius_A + self.radius_B)/self.radius_A
+        R_tot = (radius_A + radius_B)/radius_A
         tra = (b_pri < R_tot)
         occ = (b_sec < R_tot)
 
         # Calculate eclipse depths, assuming Solar limb darkening for all
         d_pri = np.zeros(N)
         d_sec = np.zeros(N)
-        k = self.radius_B / self.radius_A
-        T14_pri = period/np.pi*np.arcsin(self.radius_A*RSUN/a * np.sqrt((1+k)**2 - b_pri**2)/np.sin(inc)) *\
+        k = radius_B / radius_A
+        T14_pri = period/np.pi*np.arcsin(radius_A*RSUN/a * np.sqrt((1+k)**2 - b_pri**2)/np.sin(inc)) *\
             np.sqrt(1-ecc**2)/(1+ecc*np.sin(w))
-        T14_sec = period/np.pi*np.arcsin(self.radius_A*RSUN/a * np.sqrt((1+k)**2 - b_sec**2)/np.sin(inc)) *\
+        T14_sec = period/np.pi*np.arcsin(radius_A*RSUN/a * np.sqrt((1+k)**2 - b_sec**2)/np.sin(inc)) *\
             np.sqrt(1-ecc**2)/(1-ecc*np.sin(w))
-        T23_pri = period/np.pi*np.arcsin(self.radius_A*RSUN/a * np.sqrt((1-k)**2 - b_pri**2)/np.sin(inc)) *\
+        T23_pri = period/np.pi*np.arcsin(radius_A*RSUN/a * np.sqrt((1-k)**2 - b_pri**2)/np.sin(inc)) *\
             np.sqrt(1-ecc**2)/(1+ecc*np.sin(w))
-        T23_sec = period/np.pi*np.arcsin(self.radius_A*RSUN/a * np.sqrt((1-k)**2 - b_sec**2)/np.sin(inc)) *\
+        T23_sec = period/np.pi*np.arcsin(radius_A*RSUN/a * np.sqrt((1-k)**2 - b_sec**2)/np.sin(inc)) *\
             np.sqrt(1-ecc**2)/(1-ecc*np.sin(w))
     
         T14_pri[np.isnan(T14_pri)] = 0.
@@ -364,14 +408,15 @@ class BinaryPopulation(object):
         T23_pri[np.isnan(T23_pri)] = 0.
         T23_sec[np.isnan(T23_sec)] = 0.
 
+        flux_ratio = self.flux_ratio
         for i in xrange(N):
             if tra[i]:
                 f = _quadratic_ld._quadratic_ld(np.array([b_pri[i]]), k[i], 0.394, 0.296, 1)[0]
-                F2 = self.flux_ratio[i]
+                F2 = flux_ratio[i]
                 d_pri[i] = 1 - (F2 + f)/(1+F2)
             if occ[i]:
                 f = _quadratic_ld._quadratic_ld(np.array([b_sec[i]/k[i]]), 1./k[i], 0.394, 0.296, 1)[0]
-                F2 = self.flux_ratio[i]
+                F2 = flux_ratio[i]
                 d_sec[i] = 1 - (1 + F2*f)/(1+F2)
 
         for c in self.orbital_props:
@@ -442,6 +487,7 @@ class BinaryPopulation(object):
           * T14_sec
           * T23_pri
           * T23_sec
+          * phase_sec
           * trapezoidal fit params [either explicitly fit or regressed]
               * depth
               * duration
@@ -484,10 +530,10 @@ class BinaryPopulation(object):
         else:
             df = self.stars.loc[m, cols].copy()
 
-        # Phase of secondary (Hilditch (2001) , Kopal (1959))
+        # Phase of secondary (Hilditch (2001) p. 238, Kopal (1959))
         #  Primary is at phase=0
         X = np.pi + 2*np.arctan(df.ecc * np.cos(df.w) / np.sqrt(1-df.ecc**2))
-        secondary_phase = X - np.sin(X)
+        secondary_phase = (X - np.sin(X))/(2.*np.pi)
 
         # Assign each system a random phase at t=0;
         N = len(df)
@@ -515,10 +561,12 @@ class BinaryPopulation(object):
         
         df.loc[:, 'n_pri'] = n_pri
         df.loc[:, 'n_sec'] = n_sec
+        df.loc[:, 'phase_sec'] = secondary_phase
 
         m = (df.n_pri > 0) | (df.n_sec > 0)
         catalog = df[m].reset_index()
-        
+
+
         if fit_trap:
             N = len(catalog)
             catalog.loc[:, 'trap_dur_pri'] = np.zeros(N)
@@ -609,7 +657,7 @@ class BinaryPopulation(object):
 
         X = np.array([getattr(self, x) for x in self.binary_features]).T
 
-        _, gamma, qmin, _, _ = self.params
+        _, gamma, qmin, _, _, _, _ = self.params
 
         M1 = np.ascontiguousarray(self.mass_A)
         minmass = self.ic.minmass
