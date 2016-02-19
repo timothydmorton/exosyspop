@@ -47,15 +47,15 @@ class BinaryPopulation(object):
     training two different regression steps that enable bypassing
     more computationally intensive steps.  
 
-    The first of these regressions is to predict the flux ratio 
-pd.set_option('mode.chained_assignment', None)    between the secondary and primary, as well as the mass ratio,
+    The first of these regressions is to predict the dmag
+    between the secondary and primary, as well as the mass ratio,
     as a function of the other more readily simulated parameters.
     Enabling this is that the population simulation is parameterized
     in order to directly infer the *radius ratio* (`qR`) distribution, 
-    rather then the *mass ratio* distribution.  Then, `flux_ratio`
+    rather then the *mass ratio* distribution.  Then, `dmag`
     is predicted as a function of `mass_A`, `radius_A`, `qR`, `age`,
     and `feh`.  And then the mass ratio `q` is predicted using all of
-    the above, as well as `flux_ratio`.  These regressions are trained
+    the above, as well as `dmag`.  These regressions are trained
     using quantities simulated directly according to the provided 
     :class:`Isochrone` object, and this training takes just a few seconds.
     Once trained, this regression (which is very
@@ -95,6 +95,8 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
                       'd_pri', 'd_sec', 'T14_pri', 'T14_sec',
                       'T23_pri', 'T23_sec')
                      
+    binary_features = ('mass_A', 'radius_A', 'age', 'feh')
+
     # property dictionary mapping to DataFrame column
     prop_columns = {}
 
@@ -117,9 +119,9 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
         self._ic = ic
         self._params = params
 
-        # Put the appopriate renamed columns in
+        # Rename appropriate columns
         for k,v in self.prop_columns.items():
-            self.stars.loc[:, k] = self.stars[v]
+            self.stars.rename(columns={v:k}, inplace=True)
 
         # Create all the columns that will be filled later
         self._not_calculated = [c for c in self.physical_props +
@@ -130,7 +132,7 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
         self.set_params(**kwargs)
 
         # Regressions to be trained
-        self._fluxrat_pipeline = None
+        self._dmag_pipeline = None
         self._q_pipeline = None
         self._logd_pipeline = None
         self._dur_pipeline = None
@@ -204,11 +206,12 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
         self.stars.loc[:,'age'] = age
         self.stars.loc[:,'feh'] = feh #reassigning feh
 
-    def _generate_binaries(self):
+    def _simulate_binary_features(self):
+        """
+        Returns feature vector X, and binary mask b
+        """
         N = self.N
         fB, gamma, qRmin, _, _ = self.params
-
-        b = np.random.random(N) < fB
 
         self._assign_ages()
 
@@ -219,42 +222,49 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
                                                            self.feh)
             self._mark_calculated('radius_A')
 
-        R1 = self.radius_A[b]
-
         # Simulate secondary radii (not masses!)
         minrad = self.min_radius
         qRmin = np.maximum(qRmin, minrad/self.radius_A)
         qR = draw_powerlaw(gamma, (qRmin, 1), N=N)
-        R2 = (qR * self.radius_A)[b]
 
-        # Calculate dmag->flux_ratio from trained regression
-        if self._fluxrat_pipeline is None:
+        b = np.random.random(N) < fB
+
+        X = np.array([getattr(self, x) for x in self.binary_features]).T
+        X = np.append(X, np.array([qR]).T, axis=1)
+        return X[b, :], b
+
+    def _generate_binaries(self):
+        N = self.N
+
+        X, b = self._simulate_binary_features()
+        #qR will always be last column, regardless of other features
+        qR = X[:, -1]  #already binary-masked
+
+        # Train pipelines if need be.
+        if self._dmag_pipeline is None:
             self._train_pipelines()
 
-        M1 = self.mass_A[b]
-        age = self.age[b]
-        feh = self.feh[b]
-        X = np.array([M1, R1, qR[b], age, feh]).T
-        flux_ratio = self._fluxrat_pipeline.predict(X)
-        #dmag = self._dmag_pipeline.predict(X)
-        #flux_ratio = 10**(-0.4 * dmag)
+        # Calculate dmag->flux_ratio from trained regression
+        dmag = self._dmag_pipeline.predict(X)
+        flux_ratio = 10**(-0.4 * dmag)
 
         # Calculate q->mass_B from trained regression
-        X = np.array([M1, R1, qR[b], age, feh, flux_ratio]).T
+        X = np.append(X, np.array([dmag]).T, axis=1)
         q = self._q_pipeline.predict(X)
-        M2 = np.zeros(N)
-        M2[b] = q*M1
-        M2[~b] = np.nan
 
-        # Recreate arrays to avoid pandas weirdness
+        # Create arrays of secondary properties
+        mass_B = np.zeros(N)
+        mass_B[b] = q*self.mass_A[b]
+        mass_B[~b] = np.nan
+
         radius_B = np.zeros(N)
-        radius_B[b] = R2
+        radius_B[b] = qR * self.radius_A[b]
         radius_B[~b] = np.nan
 
         fluxrat = np.zeros(N)
         fluxrat[b] = flux_ratio
         
-        self.stars.loc[:, 'mass_B'] = M2
+        self.stars.loc[:, 'mass_B'] = mass_B
         self.stars.loc[:, 'radius_B'] = radius_B
         self.stars.loc[:, 'flux_ratio'] = fluxrat
         for c in ['mass_B', 'radius_B', 'flux_ratio']:
@@ -546,18 +556,23 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
 
         return catalog
 
-    def _train_pipelines(self, plot=False, **kwargs):
+    def _get_binary_training_data(self):
+        """Returns features and target data for dmag/q training"""
         self._assign_ages()
-        M1 = np.ascontiguousarray(self.mass_A)
-        
+
+        X = np.array([getattr(self, x) for x in self.binary_features]).T
+
         # treat q now as mass-ratio powerlaw for training purposes
         # to generate toy secondary masses.
-        fB, gamma, qmin, _, _ = self.params
+        M1 = np.ascontiguousarray(self.mass_A)
+
+        _, gamma, _, _, _ = self.params
+        qmin = 0.1
         minmass = self.ic.minmass
         qmin = np.maximum(qmin, minmass/M1)
-        q = draw_powerlaw(gamma, (qmin, 1), N=len(M1))
-        M2 = q*M1
+        q = draw_powerlaw(gamma, (qmin, 1), N=X.shape[0])
 
+        M2 = q*M1
         ic = self.ic
         feh = np.ascontiguousarray(self.feh)
         age = np.ascontiguousarray(self.age)
@@ -565,14 +580,18 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
         R2 = ic.radius(M2, age, feh)
         qR = R2/R1        
 
-        # Train flux_ratio pipeline
-        X = np.array([M1,R1,qR,age,feh]).T
+        X = np.append(X, np.array([qR]).T, axis=1)
+        #X = np.array([M1,R1,age,feh,qR]).T
         dmag = ic.mag['Kepler'](M2, age, feh) - ic.mag['Kepler'](M1, age, feh)
-        fluxrat = 10**(-0.4*dmag)
-        y = dmag
-        y = fluxrat
+        return X, dmag, q
+
+    def _train_pipelines(self, plot=False, **kwargs):
+
+        Xorig, dmag, q = self._get_binary_training_data()
+
+        y = dmag.copy()
         ok = ~np.isnan(y)
-        X = X[ok, :]
+        X = Xorig[ok, :]
         y = y[ok]
 
         # Separate train/test data
@@ -587,24 +606,27 @@ pd.set_option('mode.chained_assignment', None)    between the secondary and prim
         regr = RandomForestRegressor
         #regr = LinearRegression
         poly_kwargs = {'degree':3, 'interaction_only':False}
-        fluxrat_pipeline = Pipeline([#('poly', PolynomialFeatures(**poly_kwargs)),
+        dmag_pipeline = Pipeline([#('poly', PolynomialFeatures(**poly_kwargs)),
                                   ('scale', StandardScaler()), 
                                   ('regress', regr(**kwargs))])
 
-        fluxrat_pipeline.fit(Xtrain,ytrain);
+        dmag_pipeline.fit(Xtrain,ytrain);
         if plot:
             fig, axes = plt.subplots(1,2, figsize=(10,4))
-            yp = fluxrat_pipeline.predict(Xtest)
-            axes[0].loglog(ytest, yp, '.', alpha=0.3)
+            yp = dmag_pipeline.predict(Xtest)
+            if use_dmag:
+                axes[0].plot(ytest, yp, '.', alpha=0.3)
+            else:
+                axes[0].loglog(ytest, yp, '.', alpha=0.3)
             axes[0].plot(ytest, ytest, 'k-')
             
-        score = fluxrat_pipeline.score(Xtest, ytest)
-        print('flux_ratio regressor trained, R2={0}'.format(score))
-        self._fluxrat_pipeline = fluxrat_pipeline
-        self._fluxrat_pipeline_score = score
+        score = dmag_pipeline.score(Xtest, ytest)
+        print('dmag regressor trained, R2={0}'.format(score))
+        self._dmag_pipeline = dmag_pipeline
+        self._dmag_pipeline_score = score
 
-        # Now train q pipeline
-        X = np.array([M1, R1, qR, age, feh, fluxrat]).T
+        # Now do mass ratio q, adding dmag to the training data.
+        X = np.append(Xorig, np.array([dmag]).T, axis=1)
         y = q
         X = X[ok, :]
         y = y[ok]
@@ -774,3 +796,17 @@ class BG_BinaryPopulation(BinaryPopulation):
         self.d_pri *= frac
         self.d_sec *= frac
         
+class TRILEGAL_BinaryPopulation(BG_BinaryPopulation):
+    prop_columns = {'age':'logAge', 'feh':'[M/H]', 
+                    'mass_A':'Mact'}
+
+    def __init__(self, *args, **kwargs):
+        super(BG_BinaryPopulation, self).__init__(*args, **kwargs)
+        
+        # create radius_A column
+        mass = self.stars.mass_A
+        logg = self.stars.logg
+        self.stars.loc[:, 'radius_A'] = np.sqrt(G * mass * MSUN / 10**logg)/RSUN
+
+class BGTargets(object):
+    pass

@@ -31,3 +31,17 @@ def semimajor(P,mstar=1):
     """Returns semimajor axis in AU given P in days, mstar in solar masses.
     """
     return ((P*DAY/2/np.pi)**2*G*mstar*MSUN)**(1./3)/AU
+
+def Pbg_kepler(Kp, b, r=4):
+    """Expected number of BG stars within r" in Kepler field within (Kp, Kp + 10)
+    
+    """
+    if Kp < 11:
+        Kp = 11
+    if Kp > 16:
+        Kp = 16
+    pA = [-2.5038e-3, 0.12912, -2.4273, 19.980, -60.931]
+    pB = [3.0668e-3, -0.15902, 3.0365, -25.320, 82.605]
+    pC = [-1.5465e-5, 7.5396e-4, -1.2836e-2, 9.6434e-2, -0.27166]
+    return (r/2)**2*(np.polyval(pC, Kp) + 
+                     np.polyval(pA, Kp)*np.exp(-b/np.polyval(pB, Kp)))
