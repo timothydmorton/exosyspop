@@ -47,21 +47,20 @@ class BinaryPopulation(object):
     training two different regression steps that enable bypassing
     more computationally intensive steps.  
 
-    The first of these regressions is to predict the dmag
-    between the secondary and primary, as well as the mass ratio,
-    as a function of the other more readily simulated parameters.
-    Enabling this is that the population simulation is parameterized
-    in order to directly infer the *radius ratio* (`qR`) distribution, 
-    rather then the *mass ratio* distribution.  Then, `dmag`
-    is predicted as a function of `mass_A`, `radius_A`, `qR`, `age`,
-    and `feh`.  And then the mass ratio `q` is predicted using all of
-    the above, as well as `dmag`.  These regressions are trained
-    using quantities simulated directly according to the provided 
-    :class:`Isochrone` object, and this training takes just a few seconds.
-    Once trained, this regression (which is very
-    accurate---R^2 ~ 0.999 with a stellar population of ~30,000) computes
-    the secondary properties of a simulated population about a factor of 10x 
-    faster than direct calls to the :class:`Isochrone`.
+    The first of these regressions is to predict the dmag between the
+    secondary and primary, as well as the radius ratio, as a function
+    of the other more readily simulated parameters.  First, `dmag` is
+    predicted as a function of selected stellar features (by default
+    these are `mass_A`, `radius_A`, `q`, `age`, and `feh`, but can be
+    changed or set differently for subclasses.)  Then the radius ratio
+    `qR` is predicted using all of the above, as well as `dmag`.
+    These regressions are trained using quantities simulated directly
+    according to the provided :class:`Isochrone` object, and this
+    training takes just a few seconds.  Once trained, this regression
+    (which is very accurate---R^2 ~ 0.999 with a stellar population of
+    ~30,000) computes the secondary properties of a simulated
+    population about a factor of 10x faster than direct calls to the
+    :class:`Isochrone`.
 
     The second regression is more costly to train (~1 min) but saves 
     correspondingly much more computation time---this is a regression
@@ -95,45 +94,49 @@ class BinaryPopulation(object):
                       'd_pri', 'd_sec', 'T14_pri', 'T14_sec',
                       'T23_pri', 'T23_sec')
                      
+    obs_props = ('dataspan', 'dutycycle')
+
     binary_features = ('mass_A', 'radius_A', 'age', 'feh')
 
     # property dictionary mapping to DataFrame column
     prop_columns = {}
-
-    # Minimum radius allowed, in Rsun.
-    min_radius = 0.11
 
     # Minimum orbital period allowed.
     min_period = 1.
 
     # Band in which eclipses are observed,
     # and exposure integration time.
-    band = 'Kepler'
-    texp = 1626./86400
 
     def __init__(self, stars, params=None, 
+                 band='Kepler', texp=1626./86400,
                  ic=DAR, **kwargs):
 
         # Copy data, so as to avoid surprises.
         self.stars = stars.copy()
         self._ic = ic
         self._params = params
+        self.band = band
+        self.texp = texp
 
         # Rename appropriate columns
         for k,v in self.prop_columns.items():
             self.stars.rename(columns={v:k}, inplace=True)
 
         # Create all the columns that will be filled later
-        self._not_calculated = [c for c in self.physical_props +
-                                self.orbital_props if c not in self.stars]
+        self._not_calculated = [c for c in self.physical_props + 
+                                self.orbital_props + self.obs_props 
+                                if c not in self.stars]
         for c in self._not_calculated:
             self.stars.loc[:, c] = np.nan
 
         self.set_params(**kwargs)
 
         # Regressions to be trained
+        self._binary_trained = False
         self._dmag_pipeline = None
-        self._q_pipeline = None
+        self._qR_pipeline = None
+
+        self._trap_trained = False
         self._logd_pipeline = None
         self._dur_pipeline = None
         self._slope_pipeline = None
@@ -144,8 +147,10 @@ class BinaryPopulation(object):
                 self._generate_binaries()
             elif name in self.orbital_props:
                 self._generate_orbits()
-        return self.stars[name].values
-
+        try:
+            return self.stars[name].values
+        except KeyError:
+            raise AttributeError(name)
 
     def _mark_calculated(self, prop):
         try:
@@ -186,7 +191,7 @@ class BinaryPopulation(object):
     def N(self):
         return len(self.stars)
 
-    def _assign_ages(self):
+    def _ensure_age(self):
         # Stellar catalog doesn't have ages, so let's make them up.
         #  ascontiguousarray makes ic calls faster.
         if 'age' in self.stars:
@@ -206,15 +211,8 @@ class BinaryPopulation(object):
         self.stars.loc[:,'age'] = age
         self.stars.loc[:,'feh'] = feh #reassigning feh
 
-    def _simulate_binary_features(self):
-        """
-        Returns feature vector X, and binary mask b
-        """
-        N = self.N
-        fB, gamma, qRmin, _, _ = self.params
-
-        self._assign_ages()
-
+    def _ensure_radius(self):
+        self._ensure_age()
         # Simulate primary radius (unless radius_A provided)
         if 'radius_A' in self._not_calculated:
             self.stars.loc[:, 'radius_A'] = self.ic.radius(self.mass_A, 
@@ -222,43 +220,79 @@ class BinaryPopulation(object):
                                                            self.feh)
             self._mark_calculated('radius_A')
 
-        # Simulate secondary radii (not masses!)
-        minrad = self.min_radius
-        qRmin = np.maximum(qRmin, minrad/self.radius_A)
-        qR = draw_powerlaw(gamma, (qRmin, 1), N=N)
+
+    def _simulate_binary_features(self):
+        """
+        Returns feature vector X, and binary mask b
+        """
+        N = self.N
+        fB, gamma, qmin, _, _ = self.params
+
+        self._ensure_radius()
+
+        # Simulate mass ratio
+        minmass = self.ic.minmass
+        qmin = np.maximum(qmin, minmass/self.mass_A)
+        q = draw_powerlaw(gamma, (qmin, 1), N=N)
 
         b = np.random.random(N) < fB
 
         X = np.array([getattr(self, x) for x in self.binary_features]).T
-        X = np.append(X, np.array([qR]).T, axis=1)
+        X = np.append(X, np.array([q]).T, axis=1)
         return X[b, :], b
 
-    def _generate_binaries(self):
+    def _generate_binaries(self, use_ic=False):
         N = self.N
 
-        X, b = self._simulate_binary_features()
-        #qR will always be last column, regardless of other features
-        qR = X[:, -1]  #already binary-masked
+        # Simulate directly from isochrones if desired; 
+        # otherwise use regression.
+        if use_ic:
+            fB, gamma, qmin, _, _ = self.params
+            b = np.random.random(N) < fB
+        
+            self._ensure_radius()
+            
+            # Simulate mass ratio
+            minmass = self.ic.minmass
+            qmin = np.maximum(qmin, minmass/self.mass_A)
+            q = draw_powerlaw(gamma, (qmin, 1), N=N)
+    
+            ic = self.ic
+            M1 = np.ascontiguousarray(self.mass_A[b])
+            M2 = np.ascontiguousarray((q * self.mass_A)[b])
+            feh = np.ascontiguousarray(self.feh[b])
+            age = np.ascontiguousarray(self.age[b])
+            R2 = ic.radius(M2, age, feh)
 
-        # Train pipelines if need be.
-        if self._dmag_pipeline is None:
-            self._train_pipelines()
+            dmag = ic.mag[self.band](M2, age, feh) - ic.mag[self.band](M1, age, feh)
+            flux_ratio = 10**(-0.4 * dmag)
 
-        # Calculate dmag->flux_ratio from trained regression
-        dmag = self._dmag_pipeline.predict(X)
-        flux_ratio = 10**(-0.4 * dmag)
+        else:
+            X, b = self._simulate_binary_features()
+            #q will always be last column, regardless of other features
+            q = X[:, -1]  #already binary-masked
+            M2 = q*self.mass_A[b]
 
-        # Calculate q->mass_B from trained regression
-        X = np.append(X, np.array([dmag]).T, axis=1)
-        q = self._q_pipeline.predict(X)
+            # Train pipelines if need be.
+            if not self._binary_trained:
+                self._train_pipelines()
+
+            # Calculate dmag->flux_ratio from trained regression
+            dmag = self._dmag_pipeline.predict(X)
+            flux_ratio = 10**(-0.4 * dmag)
+
+            # Calculate qR->radius_B from trained regression
+            X = np.append(X, np.array([dmag]).T, axis=1)
+            qR = self._qR_pipeline.predict(X)
+            R2 = qR * self.radius_A[b]
 
         # Create arrays of secondary properties
         mass_B = np.zeros(N)
-        mass_B[b] = q*self.mass_A[b]
+        mass_B[b] = M2
         mass_B[~b] = np.nan
 
         radius_B = np.zeros(N)
-        radius_B[b] = qR * self.radius_A[b]
+        radius_B[b] = R2
         radius_B[~b] = np.nan
 
         fluxrat = np.zeros(N)
@@ -395,7 +429,8 @@ class BinaryPopulation(object):
         
 
     def observe(self, query=None, fit_trap=False, new=False,
-                new_orbits=False, regr_trap=False):
+                new_orbits=False, regr_trap=False, 
+                dataspan=None, dutycycle=None):
         """
         Returns catalog of the following observable quantities:
           
@@ -418,6 +453,10 @@ class BinaryPopulation(object):
         of eclipses that would be observed with 100% duty cycle.  This
         is done independently for primary and secondary eclipses.
 
+        If `dataspan` and `dutycycle` are not provided, then they 
+        must be part of the `stars` DataFrame.  If they weren't part
+        before, they will be added by this function.
+
         TODO: incorporate pipeline detection efficiency.
 
         """
@@ -429,9 +468,17 @@ class BinaryPopulation(object):
         elif new_orbits:
             self._generate_orbits()
 
+        for v in ('dataspan', 'dutycycle'):
+            var = eval(v)
+            if v in self._not_calculated:
+                if var is None:
+                    raise ValueError('{} must be provided'.format(v))
+                else:
+                    self.stars.loc[:, v] = var
+
         # Select only systems with eclipsing (or occulting) geometry
         m = (self.tra | self.occ) & (self.stars.dataspan > 0)
-        cols = list(self.orbital_props) + ['dataspan', 'dutycycle', 'flux_ratio']
+        cols = list(self.orbital_props + self.obs_props) + ['flux_ratio']
         if query is not None:
             df = self.stars.loc[m, cols].query(query)
         else:
@@ -531,7 +578,7 @@ class BinaryPopulation(object):
                 catalog.loc[i, 'trap_slope_sec'] = slope_sec
 
         if regr_trap:
-            if self._dur_pipeline is None:
+            if not self._trap_trained:
                 self._train_trap()
 
             Xpri = self._get_trap_features(catalog, pri_only=True)
@@ -558,36 +605,33 @@ class BinaryPopulation(object):
 
     def _get_binary_training_data(self):
         """Returns features and target data for dmag/q training"""
-        self._assign_ages()
+        self._ensure_radius()
 
         X = np.array([getattr(self, x) for x in self.binary_features]).T
 
-        # treat q now as mass-ratio powerlaw for training purposes
-        # to generate toy secondary masses.
-        M1 = np.ascontiguousarray(self.mass_A)
+        _, gamma, qmin, _, _ = self.params
 
-        _, gamma, _, _, _ = self.params
-        qmin = 0.1
+        M1 = np.ascontiguousarray(self.mass_A)
         minmass = self.ic.minmass
         qmin = np.maximum(qmin, minmass/M1)
         q = draw_powerlaw(gamma, (qmin, 1), N=X.shape[0])
-
         M2 = q*M1
+
         ic = self.ic
         feh = np.ascontiguousarray(self.feh)
         age = np.ascontiguousarray(self.age)
-        R1 = ic.radius(M1, age, feh)
         R2 = ic.radius(M2, age, feh)
+        R1 = self.radius_A
         qR = R2/R1        
 
-        X = np.append(X, np.array([qR]).T, axis=1)
+        X = np.append(X, np.array([q]).T, axis=1)
         #X = np.array([M1,R1,age,feh,qR]).T
-        dmag = ic.mag['Kepler'](M2, age, feh) - ic.mag['Kepler'](M1, age, feh)
-        return X, dmag, q
+        dmag = ic.mag[self.band](M2, age, feh) - ic.mag[self.band](M1, age, feh)
+        return X, dmag, qR
+
 
     def _train_pipelines(self, plot=False, **kwargs):
-
-        Xorig, dmag, q = self._get_binary_training_data()
+        Xorig, dmag, qR = self._get_binary_training_data()
 
         y = dmag.copy()
         ok = ~np.isnan(y)
@@ -611,48 +655,54 @@ class BinaryPopulation(object):
                                   ('regress', regr(**kwargs))])
 
         dmag_pipeline.fit(Xtrain,ytrain);
+        yp = dmag_pipeline.predict(Xtest)
         if plot:
             fig, axes = plt.subplots(1,2, figsize=(10,4))
-            yp = dmag_pipeline.predict(Xtest)
-            if use_dmag:
-                axes[0].plot(ytest, yp, '.', alpha=0.3)
-            else:
-                axes[0].loglog(ytest, yp, '.', alpha=0.3)
-            axes[0].plot(ytest, ytest, 'k-')
+            axes[0].plot(ytest, yp, 'o', ms=1, mew=0.2, alpha=0.3)
+            axes[0].plot(ytest, ytest, 'r-', lw=1, alpha=0.5)
             
         score = dmag_pipeline.score(Xtest, ytest)
         print('dmag regressor trained, R2={0}'.format(score))
         self._dmag_pipeline = dmag_pipeline
         self._dmag_pipeline_score = score
 
-        # Now do mass ratio q, adding dmag to the training data.
+        Xtest_dmag = Xtest
+        ytest_dmag = ytest
+        yp_dmag = yp
+
+        # Now train radius ratio qR, adding dmag to the training data.
         X = np.append(Xorig, np.array([dmag]).T, axis=1)
-        y = q
+        y = qR
         X = X[ok, :]
         y = y[ok]
 
         # Separate train/test data
-        u = np.random.random(X.shape[0])
-        itest = u < 0.2
-        itrain = u >= 0.2
         Xtest = X[itest, :]
         Xtrain = X[itrain, :]
         ytest = y[itest]
         ytrain = y[itrain]
 
-        q_pipeline = Pipeline([#('poly', PolynomialFeatures(**poly_kwargs)),
+        qR_pipeline = Pipeline([#('poly', PolynomialFeatures(**poly_kwargs)),
                                ('scale', StandardScaler()), 
                                ('regress', regr(**kwargs))])
 
-        q_pipeline.fit(Xtrain, ytrain)
+        qR_pipeline.fit(Xtrain, ytrain)
+        yp = qR_pipeline.predict(Xtest)
         if plot:
-            yp = q_pipeline.predict(Xtest)
-            axes[1].plot(ytest, yp, '.', alpha=0.3)
-            axes[1].plot(ytest, ytest, 'k-')
-        score = q_pipeline.score(Xtest, ytest)
-        print('q regressor trained, R2={0}'.format(score))
-        self._q_pipeline = q_pipeline
-        self._q_pipeline_score = score
+            axes[1].loglog(ytest, yp, 'o', ms=1, mew=0.2, alpha=0.3)
+            axes[1].plot(ytest, ytest, 'r-', lw=1, alpha=0.5)
+        score = qR_pipeline.score(Xtest, ytest)
+        print('qR regressor trained, R2={0}'.format(score))
+        self._qR_pipeline = qR_pipeline
+        self._qR_pipeline_score = score
+
+        Xtest_qR = Xtest
+        ytest_qR = ytest
+        yp_qR = yp
+
+        self._binary_trained = True
+
+        return Xtest, (ytest_dmag, yp_dmag), (ytest_qR, yp_qR)
         
     def get_N_observed(self, query=None, N=10000, fit_trap=False,
                        regr_trap=True, new=False, new_orbits=True,
@@ -769,6 +819,7 @@ class BinaryPopulation(object):
         self._slope_pipeline = pipeline
         self._slope_score = score
 
+        self._trap_trained = True
         
 
 class KeplerBinaryPopulation(BinaryPopulation):
@@ -776,37 +827,51 @@ class KeplerBinaryPopulation(BinaryPopulation):
     prop_columns = {'mass_A':'mass'}
 
 
-class BG_BinaryPopulation(BinaryPopulation):
+class BlendedBinaryPopulation(BinaryPopulation):
     """
-    Assumes that 'mass_A', 'radius_A' are assigned appropriately.
+    Class for diluted binary populations
 
-    Also assumes that properties `kepmag_target`, `kepmag_A`
-    have been defined.
-
+    Implement `dilution_factor` property to dilute the depths
     """
+    
+    @property
+    def dilution_factor(self):
+            return 1.
+
     def _generate_orbits(self, **kwargs):
         # First, proceed as before...
-        super(BG_BinaryPopulation, self)._generate_orbits(**kwargs)
+        super(BlendedBinaryPopulation, self)._generate_orbits(**kwargs)
         
         # ...then, dilute the depths appropriately.
-        F_target = 10**(-0.4*self.stars.kepmag_target)
-        F_A = 10**(-0.4*self.stars.kepmag_A)
-        F_B = self.stars.flux_ratio*F_A
-        frac = (F_A + F_B)/(F_A + F_B + F_target)
+        frac = self.dilution_factor
         self.d_pri *= frac
         self.d_sec *= frac
         
-class TRILEGAL_BinaryPopulation(BG_BinaryPopulation):
+class TRILEGAL_BinaryPopulation(BinaryPopulation):
     prop_columns = {'age':'logAge', 'feh':'[M/H]', 
-                    'mass_A':'Mact'}
+                    'mass_A':'m_ini'}
+
+    binary_features = ('mass_A', 'age', 'feh', 'logL', 'logTe', 'logg')
 
     def __init__(self, *args, **kwargs):
-        super(BG_BinaryPopulation, self).__init__(*args, **kwargs)
+        super(TRILEGAL_BinaryPopulation, self).__init__(*args, **kwargs)
         
         # create radius_A column
         mass = self.stars.mass_A
         logg = self.stars.logg
         self.stars.loc[:, 'radius_A'] = np.sqrt(G * mass * MSUN / 10**logg)/RSUN
+        self._mark_calculated('radius_A')
+
+
+#    @property
+#    def dilution_factor(self):
+#        F_target = 10**(-0.4*self.stars.kepmag_target)
+#        F_A = 10**(-0.4*self.stars.kepmag_A)
+#        F_B = self.stars.flux_ratio*F_A
+#        frac = (F_A + F_B)/(F_A + F_B + F_target)
+        
+
+
 
 class BGTargets(object):
     pass
