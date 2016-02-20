@@ -6,7 +6,7 @@ import pandas as pd
 import logging
 
 # This disables expensive garbage collection calls
-# within python.  Took forever to figure this out.
+# within pandas.  Took forever to figure this out.
 pd.set_option('mode.chained_assignment', None)
 
 import matplotlib.pyplot as plt
@@ -514,16 +514,20 @@ class BinaryPopulation(object):
         elif new_orbits:
             self._generate_orbits()
 
-        for v in ('dataspan', 'dutycycle'):
+        for v in ['dataspan', 'dutycycle']:
             var = eval(v)
             if v in self._not_calculated:
                 if var is None:
-                    raise ValueError('{} must be provided'.format(v))
+                    raise ValueError('{0} must be provided'.format(v))
                 else:
+                    self.stars.loc[:, v] = var
+                    self._mark_calculated(v)
+            else:
+                if var is not None:
                     self.stars.loc[:, v] = var
 
         # Select only systems with eclipsing (or occulting) geometry
-        m = (self.tra | self.occ) & (self.stars.dataspan > 0)
+        m = (self.tra | self.occ) & (self.dataspan > 0)
         cols = list(self.orbital_props + self.obs_props) + ['flux_ratio']
         if query is not None:
             df = self.stars.loc[m, cols].query(query)
@@ -754,8 +758,9 @@ class BinaryPopulation(object):
         
     def get_N_observed(self, query=None, N=10000, fit_trap=False,
                        regr_trap=True, new=False, new_orbits=True,
-                       verbose=False):
+                       verbose=False, dataspan=None, dutycycle=None):
         df = pd.DataFrame()
+        
         while len(df) < N:
             df = pd.concat([df, self.observe(query=query, new=new,
                                              new_orbits=new_orbits,
@@ -793,19 +798,33 @@ class BinaryPopulation(object):
         """
         N is minimum number of simulated transits to train with.
         """
+        # Deal with corner case where dataspan, dutycycle
+        # not provided, and we have to invent them temporarily
+        temp_obsdata = False
+        if 'dataspan' in self._not_calculated:
+            temp_obsdata = True
+            self.stars.loc[:, 'dataspan'] = 1400
+            self.stars.loc[:, 'dutycycle'] = 1.
+            self._mark_calculated('dataspan')
+            self._mark_calculated('dutycycle')
+
         df = self.get_N_observed(query=query, N=N, fit_trap=True, regr_trap=False)
-   
+
+        if temp_obsdata:
+            self.stars.loc[:, 'dataspan'] = np.nan
+            self.stars.loc[:, 'dutycycle'] = np.nan
+            self._not_calculated += ['dataspan', 'dutycycle']
+
         X = self._get_trap_features(df)
         
-        # Check for and remove infs/nans
-        pri = ~np.isnan(df.trap_depth_pri.values)
-        sec = ~np.isnan(df.trap_depth_sec.values)
+        pri = (df.T14_pri.values > 0) & (df.d_pri.values > 0)
+        sec = (df.T14_sec.values > 0) & (df.d_sec.values > 0)
         y1 = np.log10(np.concatenate((df.trap_depth_pri.values[pri],
                                   df.trap_depth_sec.values[sec])))
         y2 = np.concatenate((df.trap_dur_pri.values[pri],
                             df.trap_dur_sec.values[sec]))
-        y3 = np.concatenate((df.trap_dur_pri.values[pri],
-                            df.trap_dur_sec.values[sec]))
+        y3 = np.concatenate((df.trap_slope_pri.values[pri],
+                            df.trap_slope_sec.values[sec]))
         ok = np.isfinite(X.sum(axis=1) + y1 + y2 + y3) 
         
         # Train/test split
@@ -919,7 +938,8 @@ class TRILEGAL_BinaryPopulation(BinaryPopulation):
 #        frac = (F_A + F_B)/(F_A + F_B + F_target)
         
 
-
+class TRILEGAL_BGBinaryPopulation(TRILEGAL_BinaryPopulation, BlendedBinaryPopulation):
+    pass
 
 class BGTargets(object):
     pass
