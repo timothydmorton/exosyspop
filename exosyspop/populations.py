@@ -15,6 +15,8 @@ from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.pipeline import Pipeline
 
+from astropy.coordinates import SkyCoord
+
 from isochrones.dartmouth import Dartmouth_Isochrone
 DAR = Dartmouth_Isochrone()
 DAR.radius(1,9.5,0) #prime the isochrone object
@@ -84,7 +86,7 @@ class BinaryPopulation(object):
 
     """
     #parameters for binary population (for period in years)
-    param_names = ('fB', 'gamma', 'qRmin', 'mu_logp', 'sig_logp', 'a', 'b')
+    param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp', 'a', 'b')
     default_params = (0.4, 0.3, 0.1, np.log10(250), 2.3, 0.8, 2.0)
 
     # Physical and orbital parameters that can be accessed.
@@ -143,6 +145,9 @@ class BinaryPopulation(object):
         self._logd_pipeline = None
         self._dur_pipeline = None
         self._slope_pipeline = None
+
+    def _get_params(self, pars):
+        return [self.params[p] for p in pars]
 
     def __getattr__(self, name):
         if name in self._not_calculated:
@@ -229,7 +234,7 @@ class BinaryPopulation(object):
         Returns feature vector X, and binary mask b
         """
         N = self.N
-        fB, gamma, qmin, _, _, _, _ = self.params
+        fB, gamma, qmin = self._get_params(['fB', 'gamma', 'qmin'])
 
         self._ensure_radius()
 
@@ -939,7 +944,42 @@ class TRILEGAL_BinaryPopulation(BinaryPopulation):
         
 
 class TRILEGAL_BGBinaryPopulation(TRILEGAL_BinaryPopulation, BlendedBinaryPopulation):
-    pass
+    """
+    targets is DataFrame of target stars
+    bgstars is DataFrame of background stars
+    """
+    param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_log', 'a', 'b')
+    default_params = (0.4, 0.3, 0.1, np.log10(250), 2.3, 0.8, 2.0)
+
+    def __init__(self, targets, bgstars, r_blend=4,
+                 **kwargs):
+        self.targets = targets
+        self.bgstars = bgstars
+
+        self._coords = None
+        self._stars = None
+
+
+    @property
+    def b(self):
+        """
+        Galactic latitude of target stars
+        """
+        if self._b is None:
+            c = SkyCoord(self.targets.ra, self.targets.dec, unit='deg')
+            self._b = c.galactic.b.deg
+        return self._b
+
+    @property
+    def stars(self):
+        if self._stars is None:
+            self._define_stars()
+        else:
+            return self._stars
+
+    def _define_stars(self):
+        
+        
 
 class BGTargets(object):
     pass
