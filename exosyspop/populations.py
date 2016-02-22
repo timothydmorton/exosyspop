@@ -86,8 +86,11 @@ class BinaryPopulation(object):
 
     """
     #parameters for binary population (for period in years)
-    param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp', 'a', 'b')
-    default_params = (0.4, 0.3, 0.1, np.log10(250), 2.3, 0.8, 2.0)
+    param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp', 'beta_a', 'beta_b')
+    #default_params = (0.4, 0.3, 0.1, np.log10(250), 2.3, 0.8, 2.0)
+
+    default_params = {'fB':0.4, 'gamma':0.3, 'qmin':0.1, 'mu_logp':np.log10(250),
+                      'sig_logp':2.3, 'beta_a':0.8, 'beta_b':2.0}
 
     # Physical and orbital parameters that can be accessed.
     physical_props = ('mass_A', 'radius_A',
@@ -178,16 +181,11 @@ class BinaryPopulation(object):
         else:
             return self.default_params
 
-    @params.setter
-    def params(self, p):
-        assert len(p)==len(self.param_names)
-        self._params = p
-
     def set_params(self, **kwargs):
         if self._params is None:
-            self._params = list(self.default_params)
+            self._params = self.default_params
         for k,v in kwargs.items():
-            self._params[self.param_names.index(k)] = v
+            self._params[k] = v
 
     @property
     def ic(self):
@@ -255,7 +253,7 @@ class BinaryPopulation(object):
         # Simulate directly from isochrones if desired; 
         # otherwise use regression.
         if use_ic:
-            fB, gamma, qmin, _, _, _, _ = self.params
+            fB, gamma, qmin = self._get_params(['fB', 'gamma', 'qmin'])
             b = np.random.random(N) < fB
         
             self._ensure_radius()
@@ -316,7 +314,7 @@ class BinaryPopulation(object):
         """
         Samples log-normal period distribution.
         """
-        _, _, _, mu_logp, sig_logp, _, _ = self.params
+        mu_logp, sig_logp = self._get_params(['mu_logp', 'sig_logp'])
         
         #  don't let anything shorter than minimum period
         period = 10**(np.random.normal(np.log10(mu_logp), sig_logp, size=N)) * 365.25
@@ -334,7 +332,7 @@ class BinaryPopulation(object):
         """
         Return N samples from eccentricity distribution
         """
-        _, _, _, _, _, a, b = self.params
+        a, b = self._get_params(['beta_a', 'beta_b'])
 
         ecc = np.random.beta(a,b,N)
         return ecc
@@ -666,7 +664,7 @@ class BinaryPopulation(object):
 
         X = np.array([getattr(self, x) for x in self.binary_features]).T
 
-        _, gamma, qmin, _, _, _, _ = self.params
+        gamma, qmin = self._get_params(['gamma','qmin'])
 
         M1 = np.ascontiguousarray(self.mass_A)
         minmass = self.ic.minmass
