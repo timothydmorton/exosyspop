@@ -121,6 +121,8 @@ class BinaryPopulation(object):
 
         # Copy data, so as to avoid surprises.
         self._stars = stars.copy()
+        self._star_cache = None
+
         self._index = None
         self._ic = ic
         self.band = band
@@ -145,10 +147,14 @@ class BinaryPopulation(object):
 
     @property
     def stars(self):
-        if self._index is None:
-            return self._stars
+        if self._star_cache is not None:
+            return self._star_cache
         else:
-            return self._stars.loc[self._index]
+            return self._stars
+
+    def _set_index(self, ix):
+        self._index = ix
+        self._star_cache = self._stars.iloc[ix]
 
     def _initialize_stars(self):
         # Rename appropriate columns
@@ -1032,7 +1038,7 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
         newvals = np.array([dataspan, dutycycle, mags, b_targ]).T
         cols = ['dataspan', 'dutycycle', 'target_mag', 'b_target']
         self._stars.loc[i_bg, cols] = newvals
-        self._index = i_bg
+        self._set_index(i_bg)
 
         # Reset binary/orbital properties
         self._not_calculated = [c for c in self.secondary_props + 
