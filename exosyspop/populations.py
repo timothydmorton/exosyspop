@@ -93,8 +93,9 @@ class BinaryPopulation(object):
                       'sig_logp':2.3, 'beta_a':0.8, 'beta_b':2.0}
 
     # Physical and orbital parameters that can be accessed.
-    physical_props = ('mass_A', 'radius_A',
-                      'mass_B', 'radius_B', 'flux_ratio')
+    primary_props = ('mass_A', 'radius_A')
+
+    secondary_props = ('mass_B', 'radius_B', 'flux_ratio')
 
     orbital_props = ('period', 'ecc', 'w', 'inc', 'a', 'aR',
                       'b_pri', 'b_sec', 'k', 'tra', 'occ',
@@ -114,29 +115,21 @@ class BinaryPopulation(object):
     # Band in which eclipses are observed,
     # and exposure integration time.
 
-    def __init__(self, stars, params=None, 
+    def __init__(self, stars, 
                  band='Kepler', texp=1626./86400,
                  ic=DAR, ecc_empirical=False, **kwargs):
 
         # Copy data, so as to avoid surprises.
-        self.stars = stars.copy()
+        self._stars = stars.copy()
         self._ic = ic
-        self._params = params
         self.band = band
         self.texp = texp
         self.ecc_empirical = ecc_empirical
 
-        # Rename appropriate columns
-        for k,v in self.prop_columns.items():
-            self.stars.rename(columns={v:k}, inplace=True)
+        #Renames columns, sets self._not_calculated appropriately.
+        self._initialize_stars()
 
-        # Create all the columns that will be filled later
-        self._not_calculated = [c for c in self.physical_props + 
-                                self.orbital_props + self.obs_props 
-                                if c not in self.stars]
-        for c in self._not_calculated:
-            self.stars.loc[:, c] = np.nan
-
+        self._params = None
         self.set_params(**kwargs)
 
         # Regressions to be trained
@@ -149,12 +142,29 @@ class BinaryPopulation(object):
         self._dur_pipeline = None
         self._slope_pipeline = None
 
+    @property
+    def stars(self):
+        return self._stars
+
+    def _initialize_stars(self):
+        # Rename appropriate columns
+        for k,v in self.prop_columns.items():
+            self._stars.rename(columns={v:k}, inplace=True)
+
+        # Create all the columns that will be filled later
+        self._not_calculated = [c for c in self.primary_props + 
+                                self.secondary_props + 
+                                self.orbital_props + self.obs_props 
+                                if c not in self._stars]
+        for c in self._not_calculated:
+            self._stars.loc[:, c] = np.nan        
+
     def _get_params(self, pars):
         return [self.params[p] for p in pars]
 
     def __getattr__(self, name):
         if name in self._not_calculated:
-            if name in self.physical_props:
+            if name in self.primary_props or name in self.secondary_props:
                 self._generate_binaries()
             elif name in self.orbital_props:
                 self._generate_orbits()
@@ -923,61 +933,130 @@ class TRILEGAL_BinaryPopulation(BinaryPopulation):
 
     binary_features = ('mass_A', 'age', 'feh', 'logL', 'logTe', 'logg')
 
-    def __init__(self, *args, **kwargs):
-        super(TRILEGAL_BinaryPopulation, self).__init__(*args, **kwargs)
-        
+    def _initialize_stars(self):
+        # Proceed as before
+        super(TRILEGAL_BinaryPopulation, self)._initialize_stars()
+        self._set_radius()
+
+    def _set_radius(self):
         # create radius_A column
-        mass = self.stars.mass_A
-        logg = self.stars.logg
-        self.stars.loc[:, 'radius_A'] = np.sqrt(G * mass * MSUN / 10**logg)/RSUN
+        mass = self._stars.mass_A
+        logg = self._stars.logg
+        self._stars.loc[:, 'radius_A'] = np.sqrt(G * mass * MSUN / 10**logg)/RSUN
         self._mark_calculated('radius_A')
 
 
-#    @property
-#    def dilution_factor(self):
-#        F_target = 10**(-0.4*self.stars.kepmag_target)
-#        F_A = 10**(-0.4*self.stars.kepmag_A)
-#        F_B = self.stars.flux_ratio*F_A
-#        frac = (F_A + F_B)/(F_A + F_B + F_target)
-        
-
-class TRILEGAL_BGBinaryPopulation(TRILEGAL_BinaryPopulation, BlendedBinaryPopulation):
+class BGBinaryPopulation(BlendedBinaryPopulation):
     """
     targets is DataFrame of target stars
     bgstars is DataFrame of background stars
     """
-    param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_log', 'a', 'b')
-    default_params = (0.4, 0.3, 0.1, np.log10(250), 2.3, 0.8, 2.0)
+    param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp', 
+                   'beta_a', 'beta_b', 'rho_5', 'rho_20')
+    default_params = {'fB':0.4, 'gamma':0.3, 'qmin':0.1, 
+                      'mu_logp':np.log10(250),
+                      'sig_logp':2.3, 'beta_a':0.8, 'beta_b':2.0,
+                      'rho_5':0.05, 'rho_20':0.005}
 
-    def __init__(self, targets, bgstars, r_blend=4,
-                 **kwargs):
-        self.targets = targets
-        self.bgstars = bgstars
+    obs_props = BlendedBinaryPopulation.obs_props + ('target_mag', 'b_target')
 
-        self._coords = None
-        self._stars = None
+    def __init__(self, targets, bgstars, r_blend=4, 
+                 target_band='kepmag', **kwargs):
+        # Copy data to avoid surprises
+        self.targets = targets.copy()
+        self._stars = bgstars.copy()
 
+        self.r_blend = r_blend
+        self.target_band = target_band
 
+        self._i_bg = self._stars.index
+        super(BGBinaryPopulation, self).__init__(self._stars, **kwargs)
+
+    @property
+    def stars(self):
+        if self._i_bg is None:
+            ix = self._stars.index
+        else:
+            ix = self._i_bg
+        return self._stars.iloc[ix]
+
+    @property
+    def dilution_factor(self):
+        F_target = 10**(-0.4*self.stars['target_mag'])
+        F_A = 10**(-0.4*self.stars['{}_mag'.format(self.band)]) # primary mag
+        F_B = self.stars.flux_ratio*F_A
+        frac = (F_A + F_B)/(F_A + F_B + F_target)
+        return frac
+        
     @property
     def b(self):
         """
         Galactic latitude of target stars
         """
-        if self._b is None:
+        if 'b' not in self.targets:
             c = SkyCoord(self.targets.ra, self.targets.dec, unit='deg')
-            self._b = c.galactic.b.deg
-        return self._b
+            self.targets.loc[:, 'b'] = c.galactic.b.deg
+        return self.targets.loc[:, 'b'].values
 
-    @property
-    def stars(self):
-        if self._stars is None:
-            self._define_stars()
-        else:
-            return self._stars
+    def rho_bg(self, b):
+        """
+        Density of BG stars at Galactic latitude, given parameters
+
+        Given rho(5) = rho_5, rho(20) = rho_20,
+        solve for A,B in rho(b) = A*exp(-b/B)
+        """
+        rho_5, rho_20 = self._get_params(['rho_5', 'rho_20'])
+        B = 15/np.log(rho_5/rho_20)
+        A = rho_5 / np.exp(-5./B)
+        return A*np.exp(-b/B)
 
     def _define_stars(self):
-        
-        
+        b = self.b
+        Nexp = np.pi*self.r_blend**2 * self.rho_bg(b)
 
-class BGTargets(object):
-    pass
+        # Calculate number of BG stars blended with each target
+        N = np.random.poisson(Nexp, size=len(Nexp))
+        Ntot = N.sum()
+
+        # Choose bg stars
+        i_bg = np.random.randint(0, len(self._stars), size=Ntot)
+        i_bg = self._stars.index[i_bg]
+
+        # Assign stars to target stars as appropriate.
+        i_targ = np.zeros(Ntot, dtype=int)
+        b_targ = np.zeros(Ntot)
+        i = 0
+        for j,n in enumerate(N):
+            i_targ[i:i+n] = j
+            b_targ[i:i+n] = b[j]
+            i += n
+
+        # Assign dataspan, dutycycle, target mag according to target stars
+        dataspan = self.targets.dataspan.values[i_targ]
+        dutycycle = self.targets.dutycycle.values[i_targ]
+        mags = self.targets[self.target_band].values[i_targ]
+        newvals = np.array([dataspan, dutycycle, mags, b_targ]).T
+        cols = ['dataspan', 'dutycycle', 'target_mag', 'b_target']
+        self._stars.loc[i_bg, cols] = newvals
+        self._i_bg = i_bg
+
+        # Reset binary/orbital properties
+        self._not_calculated = [c for c in self.secondary_props + 
+                                self.orbital_props]
+
+    def _train_pipelines(self, **kwargs):
+        # Train pipelines using entire bgstar catalog, not small selection.
+        old_i_bg = self._i_bg
+        self._i_bg = self._stars.index
+
+        super(BGBinaryPopulation, self)._train_pipelines(**kwargs)
+        
+        # Return as before
+        self._i_bg = old_i_bg
+
+class TRILEGAL_BGBinaryPopulation(TRILEGAL_BinaryPopulation, BGBinaryPopulation):
+    
+    # This from BGBinaryPopulation; otherwise want to inherit from 
+    # TRILEGAL_BinaryPopulation
+    def __init__(self, *args, **kwargs):
+        BGBinaryPopulation.__init__(self, *args, **kwargs)
