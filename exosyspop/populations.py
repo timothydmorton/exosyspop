@@ -121,6 +121,7 @@ class BinaryPopulation(object):
 
         # Copy data, so as to avoid surprises.
         self._stars = stars.copy()
+        self._index = None
         self._ic = ic
         self.band = band
         self.texp = texp
@@ -144,7 +145,10 @@ class BinaryPopulation(object):
 
     @property
     def stars(self):
-        return self._stars
+        if self._index is None:
+            return self._stars
+        else:
+            return self._stars.loc[self._index]
 
     def _initialize_stars(self):
         # Rename appropriate columns
@@ -964,21 +968,11 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
                  target_band='kepmag', **kwargs):
         # Copy data to avoid surprises
         self.targets = targets.copy()
-        self._stars = bgstars.copy()
 
         self.r_blend = r_blend
         self.target_band = target_band
 
-        self._i_bg = self._stars.index
-        super(BGBinaryPopulation, self).__init__(self._stars, **kwargs)
-
-    @property
-    def stars(self):
-        if self._i_bg is None:
-            ix = self._stars.index
-        else:
-            ix = self._i_bg
-        return self._stars.iloc[ix]
+        super(BGBinaryPopulation, self).__init__(bgstars, **kwargs)
 
     @property
     def dilution_factor(self):
@@ -1038,7 +1032,7 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
         newvals = np.array([dataspan, dutycycle, mags, b_targ]).T
         cols = ['dataspan', 'dutycycle', 'target_mag', 'b_target']
         self._stars.loc[i_bg, cols] = newvals
-        self._i_bg = i_bg
+        self._index = i_bg
 
         # Reset binary/orbital properties
         self._not_calculated = [c for c in self.secondary_props + 
@@ -1046,13 +1040,13 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
 
     def _train_pipelines(self, **kwargs):
         # Train pipelines using entire bgstar catalog, not small selection.
-        old_i_bg = self._i_bg
-        self._i_bg = self._stars.index
+        old_index = self._index
+        self._index = self._stars.index
 
         super(BGBinaryPopulation, self)._train_pipelines(**kwargs)
         
         # Return as before
-        self._i_bg = old_i_bg
+        self._index = old_index
 
 class TRILEGAL_BGBinaryPopulation(TRILEGAL_BinaryPopulation, BGBinaryPopulation):
     
