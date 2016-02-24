@@ -8,6 +8,8 @@ MSUN = const.M_sun.cgs.value
 RSUN = const.R_sun.cgs.value
 AU = const.au.cgs.value
 DAY = 86400.
+REARTH = const.R_earth.cgs.value
+MEARTH = const.M_earth.cgs.value
 
 def draw_powerlaw(alpha, rng, N=1):
     """

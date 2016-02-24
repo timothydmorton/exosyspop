@@ -28,7 +28,7 @@ from vespa.stars.utils import draw_eccs # this is a function that returns
 from vespa.transit_basic import _quadratic_ld, eclipse_tt, NoEclipseError
 
 from .utils import draw_powerlaw, semimajor, rochelobe
-from .utils import G, MSUN, RSUN, AU, DAY
+from .utils import G, MSUN, RSUN, AU, DAY, REARTH, MEARTH
 
 class BinaryPopulation(object):
     """
@@ -122,7 +122,6 @@ class BinaryPopulation(object):
         # Copy data, so as to avoid surprises.
         self._stars = stars.copy()
         self._stars_cache = None
-        self._index_cache = None
 
         self._index = None
         self._ic = ic
@@ -155,7 +154,7 @@ class BinaryPopulation(object):
 
     def _set_index(self, ix):
         self._index = ix
-        self._stars_cache = self._stars.iloc[ix]
+        self._stars_cache = self._stars.loc[ix]
 
     def _initialize_stars(self):
         # Rename appropriate columns
@@ -203,11 +202,11 @@ class BinaryPopulation(object):
         if self._params is not None:
             return self._params
         else:
-            return self.default_params
+            return self.default_params.copy()
 
     def set_params(self, **kwargs):
         if self._params is None:
-            self._params = self.default_params
+            self._params = self.default_params.copy()
         for k,v in kwargs.items():
             self._params[k] = v
 
@@ -224,30 +223,31 @@ class BinaryPopulation(object):
     def _ensure_age(self):
         # Stellar catalog doesn't have ages, so let's make them up.
         #  ascontiguousarray makes ic calls faster.
-        if 'age' in self.stars:
+        if 'age' in self._stars:
             return
 
         ic = self.ic
-        feh = np.ascontiguousarray(np.clip(self.feh, ic.minfeh, ic.maxfeh))
-        minage, maxage = ic.agerange(self.mass_A, feh)
+        feh = np.ascontiguousarray(np.clip(self._stars.feh, ic.minfeh, ic.maxfeh))
+        minage, maxage = ic.agerange(self._stars.mass_A, feh)
         maxage = np.clip(maxage, 0, ic.maxage)
-        if 'age' not in self.stars:
+        if 'age' not in self._stars:
             minage += 0.3 # stars are selected to not be active
             maxage -= 0.1
             age = np.random.random(size=len(feh)) * (maxage - minage) + minage
         else:
-            age = np.clip(self.stars.age.values, minage, maxage)
+            age = np.clip(self._stars.age.values, minage, maxage)
 
-        self.stars.loc[:,'age'] = age
-        self.stars.loc[:,'feh'] = feh #reassigning feh
+        self._stars.loc[:,'age'] = age
+        self._stars.loc[:,'feh'] = feh #reassigning feh
 
     def _ensure_radius(self):
         self._ensure_age()
         # Simulate primary radius (unless radius_A provided)
         if 'radius_A' in self._not_calculated:
-            self.stars.loc[:, 'radius_A'] = self.ic.radius(self.mass_A, 
-                                                           self.age, 
-                                                           self.feh)
+            mass_A = np.ascontiguousarray(self._stars.mass_A)
+            age = np.ascontiguousarray(self._stars.age)
+            feh = np.ascontiguousarray(self._stars.feh)
+            self._stars.loc[:, 'radius_A'] = self.ic.radius(mass_A, age, feh)
             self._mark_calculated('radius_A')
 
 
@@ -367,10 +367,11 @@ class BinaryPopulation(object):
         return ecc
 
     def _generate_orbits(self, geom_only=False):
-        mass_A = self.mass_A
+
         mass_B = self.mass_B
-        radius_A = self.radius_A
         radius_B = self.radius_B
+        mass_A = self.mass_A
+        radius_A = self.radius_A
 
         N = self.N
         logging.debug('Generating orbits for {} stars...'.format(N))
@@ -602,8 +603,7 @@ class BinaryPopulation(object):
         df.loc[:, 'phase_sec'] = secondary_phase
 
         m = (df.n_pri > 0) | (df.n_sec > 0)
-        catalog = df[m].reset_index()
-
+        catalog = df[m].reset_index().rename(columns={'index':'host'})
 
         if fit_trap:
             N = len(catalog)
@@ -989,6 +989,7 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
         self.target_band = target_band
 
         super(BGBinaryPopulation, self).__init__(bgstars, **kwargs)
+        self._define_stars()
 
     @property
     def dilution_factor(self):
@@ -1070,5 +1071,87 @@ class TRILEGAL_BGBinaryPopulation(TRILEGAL_BinaryPopulation, BGBinaryPopulation)
     
     # This from BGBinaryPopulation; otherwise want to inherit from 
     # TRILEGAL_BinaryPopulation
-    def __init__(self, *args, **kwargs):
-        BGBinaryPopulation.__init__(self, *args, **kwargs)
+    __init__ = BGBinaryPopulation.__init__
+
+class PlanetPopulation(KeplerBinaryPopulation):
+    """
+    Need to implement _sample_Np, sample_Rp, _sample_period methods
+    """
+
+    def _sample_Np(self, N):
+        raise NotImplementedError
+
+    def _sample_Rp(self, N):
+        raise NotImplementedError
+
+    @property
+    def host_stars(self):
+        return self._stars
+
+    def _generate_planets(self):
+        N = len(self.host_stars)
+        logging.debug('Generating planetary companions for {} stars...'.format(N))
+
+        # need to create mass_B, radius_B, flux_ratio
+        
+        # First, determine how many planets to assign per star.
+        Nplanets = self._sample_Np(N)
+        Ntot = Nplanets.sum()
+
+        i_host = np.zeros(Ntot, dtype=int)
+        i = 0
+        for n,ix in zip(Nplanets,self._stars.index):
+            i_host[i:i+n] = ix
+            i += n
+        self._set_index(i_host)
+
+        # Then, give them radii, masses, flux_ratio
+        radius_B = self._sample_Rp(Ntot) #comes back in R_SUN
+        mass_B = (radius_B/RSUN * REARTH)**2.06 * MEARTH/MSUN #in MSUN
+        flux_ratio = 0. #could presumably give reflected/thermal emission here...
+        
+        for c in self.secondary_props:
+            self.stars.loc[:, c] = eval(c)
+            self._mark_calculated(c)
+        
+        logging.debug('{} planets generated.'.format(Ntot))
+
+
+    def _generate_binaries(self):
+        """
+        Generating companion planets according to parameters
+
+        This uses standard independent Poisson process model.
+        """
+        self._ensure_radius()
+        self._generate_planets()
+
+class PoissonPlanetPopulation(PlanetPopulation):
+    """
+    Poisson/isotropic model of planet occurrence.
+
+    Parameters:
+      * N_pl: average number of planets per system
+      * beta: power-law period index
+      * alpha: power-law radius index
+      * beta_a, beta_b: eccentricity beta-distribution parameters
+    """
+    param_names = ('N_pl', 'beta', 'alpha', 'Rp_min', 'Rp_max',
+                   'period_min', 'period_max', 'beta_a', 'beta_b')
+    default_params = {'N_pl':10.0, 'beta':-0.75, 'alpha':-1.6,
+                      'Rp_min':0.75, 'Rp_max':20, 
+                      'period_min':1., 'period_max':10000.,
+                      'beta_a':0.8, 'beta_b':2.0}
+
+    
+    def _sample_period(self, N):
+        beta, lo, hi = self._get_params(['beta', 'period_min', 'period_max'])
+        return draw_powerlaw(beta, (lo, hi), N=N)
+
+    def _sample_Np(self, N):
+        N_pl = self.params['N_pl']
+        return np.random.poisson(N_pl, size=N)
+
+    def _sample_Rp(self, N):
+        alpha, lo, hi = self._get_params(['alpha', 'Rp_min', 'Rp_max'])
+        return draw_powerlaw(alpha, (lo, hi), N=N) * REARTH/RSUN
