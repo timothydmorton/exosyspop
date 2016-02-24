@@ -205,10 +205,18 @@ class BinaryPopulation(object):
             return self.default_params.copy()
 
     def set_params(self, **kwargs):
+        """
+        Set values of parameters. 
+
+        Calling this sets all secondary & orbital properties to "unset"
+        """
         if self._params is None:
             self._params = self.default_params.copy()
         for k,v in kwargs.items():
             self._params[k] = v
+        for p in self.secondary_props + self.orbital_props:
+            if p not in self._not_calculated:
+                self._not_calculated.append(p)
 
     @property
     def ic(self):
@@ -368,13 +376,15 @@ class BinaryPopulation(object):
 
     def _generate_orbits(self, geom_only=False):
 
+        # This order is important.  access secondary properties
+        #  before primary, so they get created if need be.
         mass_B = self.mass_B
         radius_B = self.radius_B
         mass_A = self.mass_A
         radius_A = self.radius_A
 
         N = self.N
-        logging.debug('Generating orbits for {} stars...'.format(N))
+        logging.debug('Generating {} orbits...'.format(N))
 
 
         # draw orbital parameters
@@ -624,11 +634,13 @@ class BinaryPopulation(object):
             w = catalog.w.values
             tra = catalog.tra.values
             occ = catalog.occ.values
+            d_pri = catalog.d_pri.values
+            d_sec = catalog.d_sec.values
 
             trapfit_kwargs = dict(npts=50, width=3, cadence=self.texp)
             for i in xrange(N):
                 # Primary
-                if tra[i]:
+                if tra[i] and d_pri[i] > 0:
                     try:
                         trapfit = eclipse_tt(P=period[i], p0=k[i], b=b_pri[i],
                                          aR=aR[i], frac=1/(1 + flux_ratio[i]),
@@ -641,7 +653,7 @@ class BinaryPopulation(object):
                 else:
                     dur_pri, depth_pri, slope_pri = [np.nan]*3
                 # Secondary
-                if occ[i]:
+                if occ[i] and d_sec[i] > 0:
                     try:
                         trapfit = eclipse_tt(P=period[i], p0=k[i], b=b_sec[i],
                                          aR=aR[i], 
@@ -679,12 +691,18 @@ class BinaryPopulation(object):
                 10**self._logd_pipeline.predict(Xpri)
             catalog.loc[pri, 'trap_slope_pri_regr'] = \
                 self._slope_pipeline.predict(Xpri)
-            catalog.loc[sec, 'trap_dur_sec_regr'] = \
-                self._dur_pipeline.predict(Xsec)
-            catalog.loc[sec, 'trap_depth_sec_regr'] = \
-                10**self._logd_pipeline.predict(Xsec)
-            catalog.loc[sec, 'trap_slope_sec_regr'] = \
-                self._slope_pipeline.predict(Xsec)
+            if Xsec.shape[0] > 1:
+                catalog.loc[sec, 'trap_dur_sec_regr'] = \
+                    self._dur_pipeline.predict(Xsec)
+                catalog.loc[sec, 'trap_depth_sec_regr'] = \
+                    10**self._logd_pipeline.predict(Xsec)
+                catalog.loc[sec, 'trap_slope_sec_regr'] = \
+                    self._slope_pipeline.predict(Xsec)
+            else:
+                for c in ['trap_dur_sec_regr',
+                          'trap_depth_sec_regr',
+                          'trap_slope_sec_regr']:
+                    catalog.loc[sec, c] = np.nan
 
 
         return catalog
@@ -1138,7 +1156,7 @@ class PoissonPlanetPopulation(PlanetPopulation):
     """
     param_names = ('N_pl', 'beta', 'alpha', 'Rp_min', 'Rp_max',
                    'period_min', 'period_max', 'beta_a', 'beta_b')
-    default_params = {'N_pl':10.0, 'beta':-0.75, 'alpha':-1.6,
+    default_params = {'N_pl':4.0, 'beta':-0.75, 'alpha':-1.6,
                       'Rp_min':0.75, 'Rp_max':20, 
                       'period_min':1., 'period_max':10000.,
                       'beta_a':0.8, 'beta_b':2.0}

@@ -35,9 +35,19 @@ def semimajor(P,mstar=1):
     """
     return ((P*DAY/2/np.pi)**2*G*mstar*MSUN)**(1./3)/AU
 
+import math
+
+@jit('f8[:](f8[:])', nopython=True)
 def rochelobe(q):
     """returns r1/a; q = M1/M2"""
-    return 0.49*q**(2./3)/(0.6*q**(2./3) + np.log(1+q**(1./3)))
+    N = len(q)
+    r = np.empty(N)
+    for i in xrange(N):
+        q_13 = q[i]**(1./3)
+        q_23 = q_13*q_13
+        r[i] = 0.49*q_23/(0.6*q_23 + math.log(1+q_13))
+    return r
+    #return 0.49*q**(2./3)/(0.6*q**(2./3) + np.log(1+q**(1./3)))
 
 def withinroche(semimajors,M1,R1,M2,R2,N=1):
     """
