@@ -86,11 +86,13 @@ class BinaryPopulation(object):
 
     """
     #parameters for binary population (for period in years)
-    param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp', 'beta_a', 'beta_b')
+    param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp', 
+                   'beta_a', 'beta_b', 'period_min', 'period_max')
     #default_params = (0.4, 0.3, 0.1, np.log10(250), 2.3, 0.8, 2.0)
 
     default_params = {'fB':0.4, 'gamma':0.3, 'qmin':0.1, 'mu_logp':np.log10(250),
-                      'sig_logp':2.3, 'beta_a':0.8, 'beta_b':2.0}
+                      'sig_logp':2.3, 'beta_a':0.8, 'beta_b':2.0,
+                      'period_min':1, 'period_max':50*365}
 
     # Physical and orbital parameters that can be accessed.
     primary_props = ('mass_A', 'radius_A')
@@ -102,26 +104,29 @@ class BinaryPopulation(object):
                       'd_pri', 'd_sec', 'T14_pri', 'T14_sec',
                       'T23_pri', 'T23_sec')
                      
-    obs_props = ('dataspan', 'dutycycle')
+    obs_props = ('dataspan', 'dutycycle', 'b_target')
 
     binary_features = ('mass_A', 'radius_A', 'age', 'feh')
 
     # property dictionary mapping to DataFrame column
     prop_columns = {}
 
-    # Minimum orbital period allowed.
-    min_period = 1.
+    default_name = 'EB'
 
     # Band in which eclipses are observed,
     # and exposure integration time.
 
-    def __init__(self, stars, 
+    def __init__(self, stars, name=None,
                  band='Kepler', texp=1626./86400,
                  ic=DAR, ecc_empirical=False, **kwargs):
 
         # Copy data, so as to avoid surprises.
         self._stars = stars.copy()
         self._stars_cache = None
+
+        if name is None:
+            name = self.default_name
+        self.name = name
 
         self._index = None
         self._ic = ic
@@ -161,11 +166,17 @@ class BinaryPopulation(object):
         for k,v in self.prop_columns.items():
             self._stars.rename(columns={v:k}, inplace=True)
 
+        # if ra, dec provided, but not b_target, then calculate it.
+        if 'ra' in self._stars:
+            c = SkyCoord(self._stars.ra, self._stars.dec, unit='deg')
+            self._stars.loc[:, 'b_target'] = c.galactic.b.deg
+
         # Create all the columns that will be filled later
         self._not_calculated = [c for c in self.primary_props + 
                                 self.secondary_props + 
                                 self.orbital_props + self.obs_props 
                                 if c not in self._stars]
+
         for c in self._not_calculated:
             self._stars.loc[:, c] = np.nan        
 
@@ -351,16 +362,17 @@ class BinaryPopulation(object):
         """
         Samples log-normal period distribution.
         """
-        mu_logp, sig_logp = self._get_params(['mu_logp', 'sig_logp'])
+        mu_logp, sig_logp, period_min = self._get_params(['mu_logp', 'sig_logp',
+                                                          'period_min'])
         
         #  don't let anything shorter than minimum period
         period = 10**(np.random.normal(np.log10(mu_logp), sig_logp, size=N)) * 365.25
-        bad = period < self.min_period
+        bad = period < period_min
         nbad = bad.sum()
         while nbad > 0:
             period[bad] = 10**(np.random.normal(np.log10(mu_logp), 
                                                 sig_logp, size=nbad)) * 365.25
-            bad = period < self.min_period
+            bad = period < period_min
             nbad = bad.sum()
 
         return period 
@@ -766,7 +778,7 @@ class BinaryPopulation(object):
             axes[0].plot(ytest, ytest, 'r-', lw=1, alpha=0.5)
             
         score = dmag_pipeline.score(Xtest, ytest)
-        print('dmag regressor trained, R2={0}'.format(score))
+        print('{0}: dmag regressor trained, R2={1}'.format(self.name, score))
         self._dmag_pipeline = dmag_pipeline
         self._dmag_pipeline_score = score
 
@@ -796,7 +808,7 @@ class BinaryPopulation(object):
             axes[1].loglog(ytest, yp, 'o', ms=1, mew=0.2, alpha=0.3)
             axes[1].plot(ytest, ytest, 'r-', lw=1, alpha=0.5)
         score = qR_pipeline.score(Xtest, ytest)
-        print('qR regressor trained, R2={0}'.format(score))
+        print('{0}: qR regressor trained, R2={1}'.format(self.name, score))
         self._qR_pipeline = qR_pipeline
         self._qR_pipeline_score = score
 
@@ -900,7 +912,7 @@ class BinaryPopulation(object):
             yp = pipeline.predict(Xtest)
             axes[0].plot(ytest, yp, '.', alpha=0.3)
             axes[0].plot(ytest, ytest, 'k-')
-        print(('Depth trained: R2={}'.format(score)))
+        print(('{}: Depth trained: R2={}'.format(self.name, score)))
         self._logd_pipeline = pipeline
         self._logd_score = score
 
@@ -916,7 +928,7 @@ class BinaryPopulation(object):
             yp = pipeline.predict(Xtest)
             axes[1].plot(ytest, yp, '.', alpha=0.3)
             axes[1].plot(ytest, ytest, 'k-')
-        print(('Duration trained: R2={}'.format(score)))
+        print(('{}: Duration trained: R2={}'.format(self.name, score)))
         self._dur_pipeline = pipeline
         self._dur_score = score
 
@@ -933,12 +945,13 @@ class BinaryPopulation(object):
             yp = pipeline.predict(Xtest)
             axes[2].plot(ytest, yp, '.', alpha=0.3)
             axes[2].plot(ytest, ytest, 'k-')
-        print(('Slope trained: R2={}'.format(score)))
+        print(('{}: Slope trained: R2={}'.format(self.name, score)))
         self._slope_pipeline = pipeline
         self._slope_score = score
 
         self._trap_trained = True
         
+        return self._logd_pipeline, self._dur_pipeline, self._slope_pipeline
 
 class KeplerBinaryPopulation(BinaryPopulation):
     #  Don't use KIC radius here; recalc for consistency.
@@ -950,8 +963,9 @@ class BlendedBinaryPopulation(BinaryPopulation):
     Class for diluted binary populations
 
     Implement `dilution_factor` property to dilute the depths
-    """
-    
+    """    
+    default_name = 'blended EB'
+
     @property
     def dilution_factor(self):
             return 1.
@@ -990,13 +1004,17 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
     bgstars is DataFrame of background stars
     """
     param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp', 
-                   'beta_a', 'beta_b', 'rho_5', 'rho_20')
+                   'beta_a', 'beta_b', 'rho_5', 'rho_20', 
+                   'period_min', 'period_max')
     default_params = {'fB':0.4, 'gamma':0.3, 'qmin':0.1, 
                       'mu_logp':np.log10(250),
                       'sig_logp':2.3, 'beta_a':0.8, 'beta_b':2.0,
-                      'rho_5':0.05, 'rho_20':0.005}
+                      'rho_5':0.05, 'rho_20':0.005,
+                      'period_min':1., 'period_max':50*365}
 
-    obs_props = BlendedBinaryPopulation.obs_props + ('target_mag', 'b_target')
+    obs_props = BlendedBinaryPopulation.obs_props + ('target_mag',)
+
+    default_name = 'BGEB'
 
     def __init__(self, targets, bgstars, r_blend=4, 
                  target_band='kepmag', **kwargs):
@@ -1095,6 +1113,8 @@ class PlanetPopulation(KeplerBinaryPopulation):
     """
     Need to implement _sample_Np, sample_Rp, _sample_period methods
     """
+
+    default_name = 'Planet'
 
     def _sample_Np(self, N):
         raise NotImplementedError
