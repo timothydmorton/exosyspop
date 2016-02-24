@@ -176,13 +176,10 @@ class BinaryPopulation(object):
     def __getattr__(self, name):
         if name in self._not_calculated:
             if name in self.primary_props or name in self.secondary_props:
-                logging.debug('{} accessed: to _generate_binaries()'.format(name))
                 self._generate_binaries()
             elif name in self.orbital_props:
-                logging.debug('{} accessed: to _generate_orbits()'.format(name))
                 self._generate_orbits()
         try:
-            logging.debug('Returning self.stars[{}].values'.format(name))
             return self.stars[name].values
         except KeyError:
             raise AttributeError(name)
@@ -455,13 +452,11 @@ class BinaryPopulation(object):
 
         values = np.array([eval(c) for c in self.orbital_props]).T
         self.stars.loc[:, self.orbital_props] = values
+        # These have to be bools.  Is there a better way to change type?
+        for c in ['tra','occ']:
+            self.stars.loc[:, c] = self.stars.loc[:, c].astype(bool)
         for c in self.orbital_props:
             self._mark_calculated(c)
-
-        logging.debug('stars now of length {}.'.format(len(self.stars)))
-        logging.debug('len(self.d_pri) = {}'.format(len(self.d_pri)))
-        logging.debug('len(self.stars["d_pri"].values) = {}'.format(
-                len(self.stars['d_pri'].values)))
 
     def _prepare_geom(self, new=False):
         if 'radius_B' in self._not_calculated or new:
