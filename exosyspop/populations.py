@@ -121,7 +121,8 @@ class BinaryPopulation(object):
 
         # Copy data, so as to avoid surprises.
         self._stars = stars.copy()
-        self._star_cache = None
+        self._stars_cache = None
+        self._index_cache = None
 
         self._index = None
         self._ic = ic
@@ -147,14 +148,14 @@ class BinaryPopulation(object):
 
     @property
     def stars(self):
-        if self._star_cache is not None:
-            return self._star_cache
+        if self._stars_cache is not None:
+            return self._stars_cache
         else:
             return self._stars
 
     def _set_index(self, ix):
         self._index = ix
-        self._star_cache = self._stars.iloc[ix]
+        self._stars_cache = self._stars.iloc[ix]
 
     def _initialize_stars(self):
         # Rename appropriate columns
@@ -175,10 +176,13 @@ class BinaryPopulation(object):
     def __getattr__(self, name):
         if name in self._not_calculated:
             if name in self.primary_props or name in self.secondary_props:
+                logging.debug('{} accessed: to _generate_binaries()'.format(name))
                 self._generate_binaries()
             elif name in self.orbital_props:
+                logging.debug('{} accessed: to _generate_orbits()'.format(name))
                 self._generate_orbits()
         try:
+            logging.debug('Returning self.stars[{}].values'.format(name))
             return self.stars[name].values
         except KeyError:
             raise AttributeError(name)
@@ -268,12 +272,12 @@ class BinaryPopulation(object):
         return X[b, :], b
 
     def _generate_binaries(self, use_ic=False):
-        logging.debug('Generating binary companions...')
-        
-        N = self.N
-
         # Simulate directly from isochrones if desired; 
         # otherwise use regression.
+        N = self.N
+        logging.debug('Generating binary companions for {} stars...'.format(N))
+        
+
         if use_ic:
             fB, gamma, qmin = self._get_params(['fB', 'gamma', 'qmin'])
             b = np.random.random(N) < fB
@@ -326,11 +330,14 @@ class BinaryPopulation(object):
         fluxrat = np.zeros(N)
         fluxrat[b] = flux_ratio
         
-        self.stars.loc[:, 'mass_B'] = mass_B
-        self.stars.loc[:, 'radius_B'] = radius_B
-        self.stars.loc[:, 'flux_ratio'] = fluxrat
-        for c in ['mass_B', 'radius_B', 'flux_ratio']:
+        values = np.array([mass_B, radius_B, fluxrat]).T
+        cols = ['mass_B', 'radius_B', 'flux_ratio']
+        self.stars.loc[:, cols] = values
+        for c in cols:
             self._mark_calculated(c)
+
+        # Mark orbital params as not calculated.
+        self._not_calculated += [c for c in self.orbital_props]
 
     def _sample_period(self, N):
         """
@@ -360,14 +367,14 @@ class BinaryPopulation(object):
         return ecc
 
     def _generate_orbits(self, geom_only=False):
-        logging.debug('Generating orbits...')
-
         mass_A = self.mass_A
         mass_B = self.mass_B
         radius_A = self.radius_A
         radius_B = self.radius_B
 
         N = self.N
+        logging.debug('Generating orbits for {} stars...'.format(N))
+
 
         # draw orbital parameters
         period = self._sample_period(N)
@@ -446,9 +453,15 @@ class BinaryPopulation(object):
                 F2 = flux_ratio[i]
                 d_sec[i] = 1 - (1 + F2*f)/(1+F2)
 
+        values = np.array([eval(c) for c in self.orbital_props]).T
+        self.stars.loc[:, self.orbital_props] = values
         for c in self.orbital_props:
-            self.stars.loc[:, c] = eval(c)
             self._mark_calculated(c)
+
+        logging.debug('stars now of length {}.'.format(len(self.stars)))
+        logging.debug('len(self.d_pri) = {}'.format(len(self.d_pri)))
+        logging.debug('len(self.stars["d_pri"].values) = {}'.format(
+                len(self.stars['d_pri'].values)))
 
     def _prepare_geom(self, new=False):
         if 'radius_B' in self._not_calculated or new:
@@ -932,14 +945,14 @@ class BlendedBinaryPopulation(BinaryPopulation):
     def dilution_factor(self):
             return 1.
 
-    def _generate_orbits(self, **kwargs):
+    def _generate_orbits(self, *args, **kwargs):
         # First, proceed as before...
-        super(BlendedBinaryPopulation, self)._generate_orbits(**kwargs)
+        super(BlendedBinaryPopulation, self)._generate_orbits(*args, **kwargs)
         
         # ...then, dilute the depths appropriately.
         frac = self.dilution_factor
-        self.d_pri *= frac
-        self.d_sec *= frac
+        self.stars['d_pri'] *= frac
+        self.stars['d_sec'] *= frac
         
 class TRILEGAL_BinaryPopulation(BinaryPopulation):
     prop_columns = {'age':'logAge', 'feh':'[M/H]', 
