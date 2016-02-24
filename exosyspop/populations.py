@@ -176,8 +176,10 @@ class BinaryPopulation(object):
     def __getattr__(self, name):
         if name in self._not_calculated:
             if name in self.primary_props or name in self.secondary_props:
+                logging.debug('Accessing {}, generating binaries.'.format(name))
                 self._generate_binaries()
             elif name in self.orbital_props:
+                logging.debug('Accessing {}, generating orbits.'.format(name))
                 self._generate_orbits()
         try:
             return self.stars[name].values
@@ -193,7 +195,8 @@ class BinaryPopulation(object):
         
     def _remove_prop(self, prop):
         self.stars.loc[:, prop] = np.nan
-        self._not_calculated.append(prop)
+        if prop not in self._not_calculated:
+            self._not_calculated.append(prop)
 
     @property
     def params(self):
@@ -326,15 +329,15 @@ class BinaryPopulation(object):
 
         fluxrat = np.zeros(N)
         fluxrat[b] = flux_ratio
-        
-        values = np.array([mass_B, radius_B, fluxrat]).T
-        cols = ['mass_B', 'radius_B', 'flux_ratio']
-        self.stars.loc[:, cols] = values
-        for c in cols:
+        flux_ratio = fluxrat
+
+        for c in self.secondary_props:
+            self.stars.loc[:, c] = eval(c)
             self._mark_calculated(c)
 
         # Mark orbital params as not calculated.
-        self._not_calculated += [c for c in self.orbital_props]
+        for c in self.orbital_props:
+            self._remove_prop(c)
 
     def _sample_period(self, N):
         """
@@ -450,12 +453,8 @@ class BinaryPopulation(object):
                 F2 = flux_ratio[i]
                 d_sec[i] = 1 - (1 + F2*f)/(1+F2)
 
-        values = np.array([eval(c) for c in self.orbital_props]).T
-        self.stars.loc[:, self.orbital_props] = values
-        # These have to be bools.  Is there a better way to change type?
-        for c in ['tra','occ']:
-            self.stars.loc[:, c] = self.stars.loc[:, c].astype(bool)
         for c in self.orbital_props:
+            self.stars.loc[:, c] = eval(c)
             self._mark_calculated(c)
 
     def _prepare_geom(self, new=False):
@@ -846,9 +845,8 @@ class BinaryPopulation(object):
         df = self.get_N_observed(query=query, N=N, fit_trap=True, regr_trap=False)
 
         if temp_obsdata:
-            self.stars.loc[:, 'dataspan'] = np.nan
-            self.stars.loc[:, 'dutycycle'] = np.nan
-            self._not_calculated += ['dataspan', 'dutycycle']
+            for c in ['dataspan', 'dutycycle']:
+                self._remove_prop(c)
 
         X = self._get_trap_features(df)
         
@@ -1030,6 +1028,8 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
         N = np.random.poisson(Nexp, size=len(Nexp))
         Ntot = N.sum()
 
+        logging.debug('Defining {} background stars.'.format(Ntot))
+
         # Choose bg stars
         i_bg = np.random.randint(0, len(self._stars), size=Ntot)
         i_bg = self._stars.index[i_bg]
@@ -1052,7 +1052,7 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
         self._stars.loc[i_bg, cols] = newvals
         self._set_index(i_bg)
 
-        # Reset binary/orbital properties
+        # Reset binary/orbital properties (possible bug alert by ignoring obs_props?)
         self._not_calculated = [c for c in self.secondary_props + 
                                 self.orbital_props]
 
