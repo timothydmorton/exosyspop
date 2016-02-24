@@ -268,6 +268,8 @@ class BinaryPopulation(object):
         return X[b, :], b
 
     def _generate_binaries(self, use_ic=False):
+        logging.debug('Generating binary companions...')
+        
         N = self.N
 
         # Simulate directly from isochrones if desired; 
@@ -358,12 +360,14 @@ class BinaryPopulation(object):
         return ecc
 
     def _generate_orbits(self, geom_only=False):
-        N = self.N
+        logging.debug('Generating orbits...')
 
         mass_A = self.mass_A
         mass_B = self.mass_B
         radius_A = self.radius_A
         radius_B = self.radius_B
+
+        N = self.N
 
         # draw orbital parameters
         period = self._sample_period(N)
