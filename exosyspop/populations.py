@@ -392,11 +392,11 @@ class BinaryPopulation(object):
                                                           'period_min'])
         
         #  don't let anything shorter than minimum period
-        period = 10**(np.random.normal(np.log10(mu_logp), sig_logp, size=N)) * 365.25
+        period = 10**(np.random.normal(mu_logp, sig_logp, size=N)) * 365.25
         bad = period < period_min
         nbad = bad.sum()
         while nbad > 0:
-            period[bad] = 10**(np.random.normal(np.log10(mu_logp), 
+            period[bad] = 10**(np.random.normal(mu_logp, 
                                                 sig_logp, size=nbad)) * 365.25
             bad = period < period_min
             nbad = bad.sum()
@@ -1080,7 +1080,28 @@ class BinaryPopulation(object):
 
         return new
 
+class PowerLawBinaryPopulation(BinaryPopulation):
+    """
+    This describes a population with power-law period distribution
+    """
+    param_names = ('fB', 'gamma', 'qmin', 'beta', 
+                   'beta_a', 'beta_b', 'period_min', 'period_max')
+
+    default_params = {'fB':0.4, 'gamma':0.3, 'qmin':0.1,
+                      'beta_a':0.8, 'beta_b':2.0, 'beta':1.5,
+                      'period_min':5, 'period_max':20*365}
+
+    def _sample_period(self, N):
+        beta, lo, hi = self._get_params(['beta', 'period_min', 'period_max'])
+        return draw_powerlaw(beta, (lo, hi), N=N)
+
+    
+
 class KeplerBinaryPopulation(BinaryPopulation):
+    #  Don't use KIC radius here; recalc for consistency.
+    prop_columns = {'mass_A':'mass'}
+
+class KeplerPowerLawBinaryPopulation(PowerLawBinaryPopulation):
     #  Don't use KIC radius here; recalc for consistency.
     prop_columns = {'mass_A':'mass'}
 
