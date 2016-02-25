@@ -91,12 +91,12 @@ class BinaryPopulation(object):
     """
     #parameters for binary population (for period in years)
     param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp', 
-                   'beta_a', 'beta_b', 'period_min', 'period_max')
+                   'beta_a', 'beta_b', 'period_min')
     #default_params = (0.4, 0.3, 0.1, np.log10(250), 2.3, 0.8, 2.0)
 
     default_params = {'fB':0.4, 'gamma':0.3, 'qmin':0.1, 'mu_logp':np.log10(250),
                       'sig_logp':2.3, 'beta_a':0.8, 'beta_b':2.0,
-                      'period_min':1, 'period_max':50*365}
+                      'period_min':1}
 
     # Physical and orbital parameters that can be accessed.
     primary_props = ('mass_A', 'radius_A')
@@ -237,6 +237,9 @@ class BinaryPopulation(object):
             return self._params
         else:
             return self.default_params.copy()
+
+    def reset_params(self):
+        self._params = self.default_params.copy()
 
     def set_params(self, **kwargs):
         """
@@ -1129,12 +1132,12 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
     """
     param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp', 
                    'beta_a', 'beta_b', 'rho_5', 'rho_20', 
-                   'period_min', 'period_max')
+                   'period_min')
     default_params = {'fB':0.4, 'gamma':0.3, 'qmin':0.1, 
                       'mu_logp':np.log10(250),
                       'sig_logp':2.3, 'beta_a':0.8, 'beta_b':2.0,
                       'rho_5':0.05, 'rho_20':0.005,
-                      'period_min':1., 'period_max':50*365}
+                      'period_min':1.}
 
     obs_props = BlendedBinaryPopulation.obs_props + ('target_mag',)
 
@@ -1187,6 +1190,13 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
         B = 15/np.log(rho_5/rho_20)
         A = rho_5 / np.exp(-5./B)
         return A*np.exp(-b/B)
+
+    def observe(self, *args, **kwargs):
+        if 'new' in kwargs:
+            if kwargs['new']:
+                self._define_stars()
+
+        return super(BGBinaryPopulation,self).observe(*args, **kwargs)
 
     def _define_stars(self):
         b = self.b
@@ -1324,3 +1334,72 @@ class PoissonPlanetPopulation(PlanetPopulation):
     def _sample_Rp(self, N):
         alpha, lo, hi = self._get_params(['alpha', 'Rp_min', 'Rp_max'])
         return draw_powerlaw(alpha, (lo, hi), N=N) * REARTH/RSUN
+
+
+class PopulationMixture(object):
+    def __init__(self, poplist):
+        self.poplist = poplist
+        
+    def __getitem__(self, name):
+        for pop in self.poplist:
+            if name==pop.name:
+                return pop
+        
+    @property
+    def param_names(self):
+        p = []
+        for pop in self.poplist:
+            p += pop.param_names
+        return list(set(p))
+    
+    @property
+    def params(self):
+        d = {}
+        for pop in self.poplist:
+            for k,v in pop.params.items():
+                if k not in d:
+                    d[k] = v
+                else:
+                    if d[k] != v:
+                        raise ValueError('Parameter mismatch! ({})'.format(k))
+        return d
+    
+    def set_params(self, **kwargs):
+        for pop in self.poplist:
+            pop.set_params(**kwargs)
+                        
+    def reset_params(self):
+        for pop in self.poplist:
+            pop.reset_params()
+                
+    def train_trap(self, **kwargs):
+        return [p._train_trap(**kwargs) for p in self.poplist]
+                
+    def observe(self, **kwargs):
+        obs = []
+        for pop in self.poplist:
+            o = pop.observe(new=True, **kwargs)
+            o.loc[:, 'population'] = pop.name
+            obs.append(o)
+            
+        return pd.concat(obs)
+
+    def save(self, folder, overwrite=False):
+        if os.path.exists(folder):
+            if overwrite:
+                shutil.rmtree(folder)
+            else:
+                raise IOError('{} exists.  Set overwrite=True to overwrite.'.format(folder))
+        os.makedirs(folder)
+        for pop in self.poplist:
+            pop.save(os.path.join(folder,pop.name))
+        
+        
+    @classmethod
+    def load(cls, folder):
+        names = os.listdir(folder)
+        poplist = []
+        for name in names:
+            f = os.path.join(folder,name)
+            poplist.append(BinaryPopulation.load(f))
+        return cls(poplist)
