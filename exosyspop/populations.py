@@ -17,6 +17,8 @@ from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.pipeline import Pipeline
 from sklearn.externals import joblib
 
+import cPickle as pickle
+
 from astropy.coordinates import SkyCoord
 
 from isochrones.dartmouth import Dartmouth_Isochrone
@@ -115,22 +117,27 @@ class BinaryPopulation(object):
     default_name = 'EB'
 
     _attrs = ('name', 'band', 'texp', 'ecc_empirical',
-             '_index')
+             '_not_calculated')
     _tables = ()
 
     def __init__(self, stars, name=None,
                  band='Kepler', texp=1626./86400,
-                 ic=DAR, ecc_empirical=False, **kwargs):
+                 ic=DAR, ecc_empirical=False, index=None,
+                 copy=True,
+                 **kwargs):
 
         # Copy data, so as to avoid surprises.
-        self._stars = stars.copy()
+        if copy:
+            self._stars = stars.copy()
+        else:
+            self._stars = stars
         self._stars_cache = None
 
         if name is None:
             name = self.default_name
         self.name = name
 
-        self._index = None
+        self._index = index
         self._ic = ic
         self.band = band
         self.texp = texp
@@ -166,15 +173,22 @@ class BinaryPopulation(object):
         self._index = ix
         self._stars_cache = self._stars.loc[ix]
 
+    def _record_stars_changes(self):
+        if self._index is not None:
+            self._stars.loc[self._index, :] = self._stars_cache
+
     def _initialize_stars(self):
         # Rename appropriate columns
         for k,v in self.prop_columns.items():
             self._stars.rename(columns={v:k}, inplace=True)
 
         # if ra, dec provided, but not b_target, then calculate it.
-        if 'ra' in self._stars:
-            c = SkyCoord(self._stars.ra, self._stars.dec, unit='deg')
-            self._stars.loc[:, 'b_target'] = c.galactic.b.deg
+        if 'ra' in self._stars and 'b_target' not in self._stars:
+            if 'b' in self._stars:
+                self._stars.rename(columns={'b':'b_target'}, inplace=True)
+            else:
+                c = SkyCoord(self._stars.ra, self._stars.dec, unit='deg')
+                self._stars.loc[:, 'b_target'] = c.galactic.b.deg
 
         # Create all the columns that will be filled later
         self._not_calculated = [c for c in self.primary_props + 
@@ -183,7 +197,10 @@ class BinaryPopulation(object):
                                 if c not in self._stars]
 
         for c in self._not_calculated:
-            self._stars.loc[:, c] = np.nan        
+            if c in ['tra','occ']:
+                self._stars.loc[:, c] = False
+            else:
+                self._stars.loc[:, c] = np.nan        
 
     def _get_params(self, pars):
         return [self.params[p] for p in pars]
@@ -197,7 +214,8 @@ class BinaryPopulation(object):
                 logging.debug('Accessing {}, generating orbits.'.format(name))
                 self._generate_orbits()
         try:
-            return self.stars[name].values
+            vals = self.stars[name].values
+            return vals
         except KeyError:
             raise AttributeError(name)
 
@@ -958,69 +976,104 @@ class BinaryPopulation(object):
         
         return self._logd_pipeline, self._dur_pipeline, self._slope_pipeline
 
-    def save_hdf(self, folder, overwrite=False):
+    def save(self, folder, overwrite=False):
         if os.path.exists(folder):
             if overwrite:
-                shutil.remove(folder)
+                shutil.rmtree(folder)
             else:
                 raise IOError('{} exists.  Set overwrite if desired.')
         os.makedirs(folder)
+        
+        # Write stars table to HDF
+        self._record_stars_changes()
         self._stars.to_hdf(os.path.join(folder, 'stars.h5'), 'df')
         store = pd.HDFStore(os.path.join(folder, 'stars.h5'))
+        if self._index is not None:
+            store['index'] = pd.Series(self._index)
         attrs = store.get_storer('df').attrs
 
+        # Store attributes in HDF file
         for attr in self._attrs:
             val = getattr(self, attr)
             attrs[attr] = val
         store.close()
 
+        # Write other tables that might be necessary
         for tbl in self._tables:
             df = getattr(self, tbl)
             df.to_hdf(os.path.join(folder, '{}.h5'.format(tbl)), 'df')
         
+        # Save trained pipelines, if they exist
+        pline_folder = os.path.join(folder,'pipelines')
         if self._binary_trained:
+            if not os.path.exists(pline_folder):
+                os.makedirs(pline_folder)
             joblib.dump(self._dmag_pipeline, 
-                        os.path.join(folder, 'dmag_pipeline.pkl'))
+                        os.path.join(pline_folder, 'dmag_pipeline.pkl'))
             joblib.dump(self._qR_pipeline, 
-                        os.path.join(folder, 'qR_pipeline.pkl'))
+                        os.path.join(pline_folder, 'qR_pipeline.pkl'))
 
         if self._trap_trained:
+            if not os.path.exists(pline_folder):
+                os.makedirs(pline_folder)
             joblib.dump(self._logd_pipeline, 
-                        os.path.join(folder, 'logd_pipeline.pkl'))
+                        os.path.join(pline_folder, 'logd_pipeline.pkl'))
             joblib.dump(self._dur_pipeline, 
-                        os.path.join(folder, 'dur_pipeline.pkl'))
+                        os.path.join(pline_folder, 'dur_pipeline.pkl'))
             joblib.dump(self._slope_pipeline, 
-                        os.path.join(folder, 'slope_pipeline.pkl'))
+                        os.path.join(pline_folder, 'slope_pipeline.pkl'))
 
-    #TODO: rewrite load_hdf to "folder" style.
+        # Record the type of the object, in order to restore it correctly.
+        tfile = os.path.join(folder,'type.pkl')
+        pickle.dump(type(self), open(tfile, 'wb'))
+
     @classmethod
-    def load_hdf(cls, filename, path=''):
-        store = pd.HDFStore(filename)
-        stars = store[path+'/stars']
-        attrs = store.get_storer(path+'/stars').attrs
+    def load(cls, folder):
+        store = pd.HDFStore(os.path.join(folder, 'stars.h5'))
+        stars = store['df']
+        for c in ['tra','occ']:
+            if c in stars:
+                stars.loc[:,c] = stars.loc[:,c].astype(bool)
+            
+        attrs = store.get_storer('df').attrs
 
-        #forward-hack for BGBinaryPopulation
-        if 'targets' in cls._tables:
-            targets = store[path+'/targets']
-            new = cls(targets, stars)
+        if 'index' in store:
+            index = pd.Index(store['index'])
         else:
-            new = cls(stars)
+            index = None
+
+        # Read the proper type to load in
+        t = pickle.load(open(os.path.join(folder,'type.pkl'),'rb'))
+
+        #forward-hack for BGBinaryPopulation.  Should be a more
+        # general way to do this (e.g. define the call signature of __init__)
+        # w.r.t. tables
+        if issubclass(t, BGBinaryPopulation):
+            targets = pd.read_hdf(os.path.join(folder, 'targets.h5'),'df')
+            new = t(targets, stars, index=index, copy=False)
+        else:
+            new = t(stars, index=index, copy=False)
         for attr in new._attrs:
             val = attrs[attr]
             setattr(new, attr, val)
+        store.close()
 
-        if 'dmag_pipeline' in attrs:
-            new._dmag_pipeline = attrs['dmag_pipeline']
-            new._qR_pipeline = attrs['qR_pipeline']
+        pline_folder = os.path.join(folder,'pipelines')
+        if 'dmag_pipeline.pkl' in os.listdir(pline_folder):
+            new._dmag_pipeline = joblib.load(os.path.join(pline_folder,
+                                                          'dmag_pipeline.pkl'))
+            new._qR_pipeline = joblib.load(os.path.join(pline_folder,
+                                                        'qR_pipeline.pkl'))
             new._binary_trained = True
 
-        if 'logd_pipeline' in attrs:
-            new._logd_pipeline = attrs['logd_pipeline']
-            new._dur_pipeline = attrs['dur_pipeline']
-            new._slope_pipeline = attrs['slope_pipeline']
+        if 'logd_pipeline.pkl' in os.listdir(pline_folder):
+            new._logd_pipeline = joblib.load(os.path.join(pline_folder,
+                                                          'logd_pipeline.pkl'))
+            new._dur_pipeline = joblib.load(os.path.join(pline_folder,
+                                                          'dur_pipeline.pkl'))
+            new._slope_pipeline = joblib.load(os.path.join(pline_folder,
+                                                          'slope_pipeline.pkl'))
             new._trap_trained = True
-
-        store.close()
 
         return new
 
@@ -1091,15 +1144,19 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
     _tables = BlendedBinaryPopulation._tables + ('targets',)
 
     def __init__(self, targets, bgstars, r_blend=4, 
-                 target_band='kepmag', **kwargs):
+                 target_band='kepmag', copy=True, **kwargs):
         # Copy data to avoid surprises
-        self.targets = targets.copy()
+        if copy:
+            self.targets = targets.copy()
+        else:
+            self.targets = targets
 
         self.r_blend = r_blend
         self.target_band = target_band
 
-        super(BGBinaryPopulation, self).__init__(bgstars, **kwargs)
-        self._define_stars()
+        super(BGBinaryPopulation, self).__init__(bgstars, copy=copy, **kwargs)
+        if self._index is None:
+            self._define_stars()
 
     @property
     def dilution_factor(self):
