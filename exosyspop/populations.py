@@ -3,6 +3,7 @@ from __future__ import print_function, division
 import numpy as np
 import pandas as pd
 
+import os, os.path, shutil
 import logging
 
 # This disables expensive garbage collection calls
@@ -14,6 +15,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.pipeline import Pipeline
+from sklearn.externals import joblib
 
 from astropy.coordinates import SkyCoord
 
@@ -110,11 +112,11 @@ class BinaryPopulation(object):
 
     # property dictionary mapping to DataFrame column
     prop_columns = {}
-
     default_name = 'EB'
 
-    # Band in which eclipses are observed,
-    # and exposure integration time.
+    _attrs = ('name', 'band', 'texp', 'ecc_empirical',
+             '_index')
+    _tables = ()
 
     def __init__(self, stars, name=None,
                  band='Kepler', texp=1626./86400,
@@ -153,6 +155,9 @@ class BinaryPopulation(object):
     @property
     def stars(self):
         if self._stars_cache is not None:
+            return self._stars_cache
+        elif self._index is not None:
+            self._set_index(self._index)
             return self._stars_cache
         else:
             return self._stars
@@ -953,6 +958,72 @@ class BinaryPopulation(object):
         
         return self._logd_pipeline, self._dur_pipeline, self._slope_pipeline
 
+    def save_hdf(self, folder, overwrite=False):
+        if os.path.exists(folder):
+            if overwrite:
+                shutil.remove(folder)
+            else:
+                raise IOError('{} exists.  Set overwrite if desired.')
+        os.makedirs(folder)
+        self._stars.to_hdf(os.path.join(folder, 'stars.h5'), 'df')
+        store = pd.HDFStore(os.path.join(folder, 'stars.h5'))
+        attrs = store.get_storer('df').attrs
+
+        for attr in self._attrs:
+            val = getattr(self, attr)
+            attrs[attr] = val
+        store.close()
+
+        for tbl in self._tables:
+            df = getattr(self, tbl)
+            df.to_hdf(os.path.join(folder, '{}.h5'.format(tbl)), 'df')
+        
+        if self._binary_trained:
+            joblib.dump(self._dmag_pipeline, 
+                        os.path.join(folder, 'dmag_pipeline.pkl'))
+            joblib.dump(self._qR_pipeline, 
+                        os.path.join(folder, 'qR_pipeline.pkl'))
+
+        if self._trap_trained:
+            joblib.dump(self._logd_pipeline, 
+                        os.path.join(folder, 'logd_pipeline.pkl'))
+            joblib.dump(self._dur_pipeline, 
+                        os.path.join(folder, 'dur_pipeline.pkl'))
+            joblib.dump(self._slope_pipeline, 
+                        os.path.join(folder, 'slope_pipeline.pkl'))
+
+    #TODO: rewrite load_hdf to "folder" style.
+    @classmethod
+    def load_hdf(cls, filename, path=''):
+        store = pd.HDFStore(filename)
+        stars = store[path+'/stars']
+        attrs = store.get_storer(path+'/stars').attrs
+
+        #forward-hack for BGBinaryPopulation
+        if 'targets' in cls._tables:
+            targets = store[path+'/targets']
+            new = cls(targets, stars)
+        else:
+            new = cls(stars)
+        for attr in new._attrs:
+            val = attrs[attr]
+            setattr(new, attr, val)
+
+        if 'dmag_pipeline' in attrs:
+            new._dmag_pipeline = attrs['dmag_pipeline']
+            new._qR_pipeline = attrs['qR_pipeline']
+            new._binary_trained = True
+
+        if 'logd_pipeline' in attrs:
+            new._logd_pipeline = attrs['logd_pipeline']
+            new._dur_pipeline = attrs['dur_pipeline']
+            new._slope_pipeline = attrs['slope_pipeline']
+            new._trap_trained = True
+
+        store.close()
+
+        return new
+
 class KeplerBinaryPopulation(BinaryPopulation):
     #  Don't use KIC radius here; recalc for consistency.
     prop_columns = {'mass_A':'mass'}
@@ -1015,6 +1086,9 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
     obs_props = BlendedBinaryPopulation.obs_props + ('target_mag',)
 
     default_name = 'BGEB'
+
+    _attrs = BlendedBinaryPopulation._attrs + ('r_blend', 'target_band')
+    _tables = BlendedBinaryPopulation._tables + ('targets',)
 
     def __init__(self, targets, bgstars, r_blend=4, 
                  target_band='kepmag', **kwargs):
