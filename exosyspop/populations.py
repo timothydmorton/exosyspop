@@ -27,7 +27,7 @@ DAR.radius(1,9.5,0) #prime the isochrone object
 
 # Still with vespa dependencis for now
 from vespa.stars.utils import draw_eccs # this is a function that returns
-                                        # empirically reasonably eccentricities
+                                        # empirically reasonable eccentricities
                                         # for given binary periods.
 from vespa.transit_basic import _quadratic_ld, eclipse_tt, NoEclipseError
 
