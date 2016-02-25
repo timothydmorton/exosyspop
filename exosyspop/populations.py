@@ -1317,7 +1317,7 @@ class PoissonPlanetPopulation(PlanetPopulation):
     """
     param_names = ('N_pl', 'beta', 'alpha', 'Rp_min', 'Rp_max',
                    'period_min', 'period_max', 'beta_a', 'beta_b')
-    default_params = {'N_pl':4.0, 'beta':-0.75, 'alpha':-1.6,
+    default_params = {'N_pl':1.0, 'beta':-0.75, 'alpha':-1.6,
                       'Rp_min':0.75, 'Rp_max':20, 
                       'period_min':1., 'period_max':10000.,
                       'beta_a':0.8, 'beta_b':2.0}
