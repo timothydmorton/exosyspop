@@ -96,7 +96,7 @@ class BinaryPopulation(object):
 
     default_params = {'fB':0.4, 'gamma':0.3, 'qmin':0.1, 'mu_logp':np.log10(250),
                       'sig_logp':2.3, 'beta_a':0.8, 'beta_b':2.0,
-                      'period_min':1}
+                      'period_min':5.}
 
     # Physical and orbital parameters that can be accessed.
     primary_props = ('mass_A', 'radius_A')
@@ -346,22 +346,28 @@ class BinaryPopulation(object):
 
         else:
             X, b = self._simulate_binary_features()
-            #q will always be last column, regardless of other features
-            q = X[:, -1]  #already binary-masked
-            M2 = q*self.mass_A[b]
+            
+            # Make sure there are some binaries; otherwise, skip regression.
+            if  b.sum() > 0:                
 
-            # Train pipelines if need be.
-            if not self._binary_trained:
-                self._train_pipelines()
+                #q will always be last column, regardless of other features
+                q = X[:, -1]  #already binary-masked
+                M2 = q*self.mass_A[b]
 
-            # Calculate dmag->flux_ratio from trained regression
-            dmag = self._dmag_pipeline.predict(X)
-            flux_ratio = 10**(-0.4 * dmag)
+                # Train pipelines if need be.
+                if not self._binary_trained:
+                    self._train_pipelines()
 
-            # Calculate qR->radius_B from trained regression
-            X = np.append(X, np.array([dmag]).T, axis=1)
-            qR = self._qR_pipeline.predict(X)
-            R2 = qR * self.radius_A[b]
+                # Calculate dmag->flux_ratio from trained regression
+                dmag = self._dmag_pipeline.predict(X)
+                flux_ratio = 10**(-0.4 * dmag)
+
+                # Calculate qR->radius_B from trained regression
+                X = np.append(X, np.array([dmag]).T, axis=1)
+                qR = self._qR_pipeline.predict(X)
+                R2 = qR * self.radius_A[b]
+            else:
+                M2, R2, flux_ratio = [np.nan]*3
 
         # Create arrays of secondary properties
         mass_B = np.zeros(N)
@@ -1083,12 +1089,17 @@ class BinaryPopulation(object):
 class PowerLawBinaryPopulation(BinaryPopulation):
     """
     This describes a population with power-law period distribution
+ 
+    Appropriate for closer-in binary population probed with EBs.
+
+    Default fB, beta tuned to roughly match with default lognormal
+    period distribution from BinaryPopulation
     """
     param_names = ('fB', 'gamma', 'qmin', 'beta', 
                    'beta_a', 'beta_b', 'period_min', 'period_max')
 
-    default_params = {'fB':0.4, 'gamma':0.3, 'qmin':0.1,
-                      'beta_a':0.8, 'beta_b':2.0, 'beta':1.5,
+    default_params = {'fB':0.15, 'gamma':0.3, 'qmin':0.1,
+                      'beta_a':0.8, 'beta_b':2.0, 'beta':-0.75,
                       'period_min':5, 'period_max':20*365}
 
     def _sample_period(self, N):
@@ -1396,11 +1407,12 @@ class PopulationMixture(object):
     def train_trap(self, **kwargs):
         return [p._train_trap(**kwargs) for p in self.poplist]
                 
-    def observe(self, **kwargs):
+    def observe(self, new=True, **kwargs):
         obs = []
         for pop in self.poplist:
-            o = pop.observe(new=True, **kwargs)
-            o.loc[:, 'population'] = pop.name
+            o = pop.observe(new=new, **kwargs)
+            if len(o)>0:
+                o.loc[:, 'population'] = pop.name
             obs.append(o)
             
         return pd.concat(obs)
