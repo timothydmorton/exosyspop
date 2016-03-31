@@ -17,6 +17,8 @@ from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.pipeline import Pipeline
 from sklearn.externals import joblib
 
+from scipy.spatial import Delaunay
+
 import cPickle as pickle
 
 from astropy.coordinates import SkyCoord
@@ -25,11 +27,14 @@ from isochrones.dartmouth import Dartmouth_Isochrone
 DAR = Dartmouth_Isochrone()
 DAR.radius(1,9.5,0) #prime the isochrone object
 
-# Still with vespa dependencis for now
+# Still with vespa dependencies for now
 from vespa.stars.utils import draw_eccs # this is a function that returns
                                         # empirically reasonable eccentricities
                                         # for given binary periods.
-from vespa.transit_basic import _quadratic_ld, eclipse_tt, NoEclipseError
+from vespa.transit_basic import (_quadratic_ld, eclipse_tt, 
+                                 NoEclipseError, NoFitError)
+
+from .catalog import SimulatedCatalog
 
 from .utils import draw_powerlaw, semimajor, rochelobe
 from .utils import G, MSUN, RSUN, AU, DAY, REARTH, MEARTH
@@ -94,7 +99,7 @@ class BinaryPopulation(object):
                    'beta_a', 'beta_b', 'period_min')
     #default_params = (0.4, 0.3, 0.1, np.log10(250), 2.3, 0.8, 2.0)
 
-    default_params = {'fB':0.4, 'gamma':0.3, 'qmin':0.1, 'mu_logp':np.log10(250),
+    default_params = {'fB':0.44, 'gamma':0.3, 'qmin':0.1, 'mu_logp':np.log10(250),
                       'sig_logp':2.3, 'beta_a':0.8, 'beta_b':2.0,
                       'period_min':5.}
 
@@ -153,6 +158,7 @@ class BinaryPopulation(object):
         self._binary_trained = False
         self._dmag_pipeline = None
         self._qR_pipeline = None
+        self._MR_tri = None
 
         self._trap_trained = False
         self._logd_pipeline = None
@@ -176,6 +182,10 @@ class BinaryPopulation(object):
     def _record_stars_changes(self):
         if self._index is not None:
             self._stars.loc[self._index, :] = self._stars_cache
+
+    @property
+    def dilution_factor(self):
+        return np.ones(self.N)
 
     def _initialize_stars(self):
         # Rename appropriate columns
@@ -296,6 +306,7 @@ class BinaryPopulation(object):
             self._mark_calculated('radius_A')
 
 
+
     def _simulate_binary_features(self):
         """
         Returns feature vector X, and binary mask b
@@ -366,6 +377,10 @@ class BinaryPopulation(object):
                 X = np.append(X, np.array([dmag]).T, axis=1)
                 qR = self._qR_pipeline.predict(X)
                 R2 = qR * self.radius_A[b]
+
+                # Make any out-of-bounds predictions -> nan
+                bad = self._check_MR(M2, R2)
+                R2[bad] = np.nan
             else:
                 M2, R2, flux_ratio = [np.nan]*3
 
@@ -497,6 +512,10 @@ class BinaryPopulation(object):
         T23_pri[np.isnan(T23_pri)] = 0.
         T23_sec[np.isnan(T23_sec)] = 0.
 
+        # Make sure no tra/occ where T14's were nans
+        tra[T14_pri==0] = False
+        occ[T14_sec==0] = False
+
         flux_ratio = self.flux_ratio
         for i in xrange(N):
             if tra[i]:
@@ -563,7 +582,7 @@ class BinaryPopulation(object):
         
 
     def observe(self, query=None, fit_trap=False, new=False,
-                new_orbits=False, regr_trap=False, 
+                new_orbits=False, regr_trap=False, use_ic=False,
                 dataspan=None, dutycycle=None):
         """
         Returns catalog of the following observable quantities:
@@ -595,10 +614,10 @@ class BinaryPopulation(object):
         TODO: incorporate pipeline detection efficiency.
 
         """
-        if fit_trap:
+        if fit_trap or use_ic:
             new = True
         if new:
-            self._generate_binaries()
+            self._generate_binaries(use_ic=use_ic)
             self._generate_orbits()
         elif new_orbits:
             self._generate_orbits()
@@ -618,18 +637,18 @@ class BinaryPopulation(object):
         # Select only systems with eclipsing (or occulting) geometry
         m = (self.tra | self.occ) & (self.dataspan > 0)
         cols = list(self.orbital_props + self.obs_props) + ['flux_ratio']
-        if query is not None:
-            df = self.stars.loc[m, cols].query(query)
-        else:
-            df = self.stars.loc[m, cols].copy()
+        df = self.stars.loc[m, cols].copy()
+
+        df.loc[:, 'dilution'] = self.dilution_factor[m]
+
 
         # Phase of secondary (Hilditch (2001) p. 238, Kopal (1959))
         #  Primary is at phase=0
+        N = len(df)
         X = np.pi + 2*np.arctan(df.ecc * np.cos(df.w) / np.sqrt(1-df.ecc**2))
         secondary_phase = (X - np.sin(X))/(2.*np.pi)
 
         # Assign each system a random phase at t=0;
-        N = len(df)
         initial_phase = np.random.random(N)
         final_phase = initial_phase + df.dataspan/df.period
 
@@ -692,7 +711,7 @@ class BinaryPopulation(object):
                                          ecc=ecc[i], w=w[i]*180/np.pi,
                                          **trapfit_kwargs)
                         dur_pri, depth_pri, slope_pri = trapfit
-                    except NoEclipseError:
+                    except (NoEclipseError, NoFitError):
                         dur_pri, depth_pri, slope_pri = [np.nan]*3
                 else:
                     dur_pri, depth_pri, slope_pri = [np.nan]*3
@@ -707,7 +726,7 @@ class BinaryPopulation(object):
                                          sec=True,
                                          **trapfit_kwargs)
                         dur_sec, depth_sec, slope_sec = trapfit
-                    except NoEclipseError:
+                    except (NoEclipseError, NoFitError):
                         dur_sec, depth_sec, slope_sec = [np.nan]*3
                 else:
                     dur_sec, depth_sec, slope_sec = [np.nan]*3
@@ -748,11 +767,31 @@ class BinaryPopulation(object):
                           'trap_slope_sec_regr']:
                     catalog.loc[sec, c] = np.nan
 
+        if query is not None:
+            return SimulatedCatalog(catalog.query(query))
+        else:
+            return SimulatedCatalog(catalog)
 
-        return catalog
+    def _check_MR(self, mass, radius):
+        """
+        Mass and radius in solar units; outputs boolean mask
+        where True means M-R combination is out-of-bounds
+        """
+        if self._MR_tri is None:
+            _ = self._get_binary_training_data()
+        
+        # Get simplex indices.  -1 means out-of-bounds
+        s = self._MR_tri.find_simplex(np.array([np.log10(mass),
+                                                np.log10(radius)]).T)
+        
+        return s==-1
 
     def _get_binary_training_data(self):
-        """Returns features and target data for dmag/q training"""
+        """Returns features and target data for dmag/q training
+
+        Also creates _MR_tri :class:`Delaunay` object, which 
+        defines the physically allowed mass-radius region.
+        """
         self._ensure_radius()
 
         X = np.array([getattr(self, x) for x in self.binary_features]).T
@@ -771,6 +810,13 @@ class BinaryPopulation(object):
         R2 = ic.radius(M2, age, feh)
         R1 = self.radius_A
         qR = R2/R1        
+
+        # defines physically allowed region in M-R space
+        Ms = np.concatenate((M1, M2))
+        Rs = np.concatenate((R1, R2))
+        ok = np.isfinite(Ms) & np.isfinite(Rs)
+        points = np.array([np.log10(Ms[ok]), np.log10(Rs[ok])]).T
+        self._MR_tri = Delaunay(points)
 
         X = np.append(X, np.array([q]).T, axis=1)
         #X = np.array([M1,R1,age,feh,qR]).T
@@ -854,17 +900,18 @@ class BinaryPopulation(object):
         
     def get_N_observed(self, query=None, N=10000, fit_trap=False,
                        regr_trap=True, new=False, new_orbits=True,
+                       use_ic=False,
                        verbose=False, dataspan=None, dutycycle=None):
         df = pd.DataFrame()
         
         while len(df) < N:
             df = pd.concat([df, self.observe(query=query, new=new,
                                              new_orbits=new_orbits,
-                                             fit_trap=fit_trap,
+                                             fit_trap=fit_trap, use_ic=use_ic,
                                              regr_trap=regr_trap)])
             if verbose:
                 print(len(df))
-        return df
+        return SimulatedCatalog(df.iloc[:N].reset_index())
 
     def _get_trap_features(self, df, sec_only=False, pri_only=False):
         #pri = ~np.isnan(df.trap_depth_pri.values) 
@@ -1121,28 +1168,19 @@ class BlendedBinaryPopulation(BinaryPopulation):
     """
     Class for diluted binary populations
 
-    Implement `dilution_factor` property to dilute the depths
+    Implement `_get_dilution` method to dilute the depths
     """    
     default_name = 'blended EB'
-
-    @property
-    def dilution_factor(self):
-            return 1.
 
     def _generate_orbits(self, *args, **kwargs):
         # First, proceed as before...
         super(BlendedBinaryPopulation, self)._generate_orbits(*args, **kwargs)
         
-        # ...then, dilute the depths appropriately.
-        frac = self.dilution_factor
-        self.stars['d_pri'] *= frac
-        self.stars['d_sec'] *= frac
-        
 class TRILEGAL_BinaryPopulation(BinaryPopulation):
     prop_columns = {'age':'logAge', 'feh':'[M/H]', 
                     'mass_A':'m_ini'}
 
-    binary_features = ('mass_A', 'age', 'feh', 'logL', 'logTe', 'logg')
+    binary_features = ('mass_A', 'feh', 'age', 'logL', 'logTe', 'logg')
 
     def _initialize_stars(self):
         # Proceed as before
@@ -1165,11 +1203,11 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
     param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp', 
                    'beta_a', 'beta_b', 'rho_5', 'rho_20', 
                    'period_min')
-    default_params = {'fB':0.4, 'gamma':0.3, 'qmin':0.1, 
+    default_params = {'fB':0.44, 'gamma':0.3, 'qmin':0.1, 
                       'mu_logp':np.log10(250),
                       'sig_logp':2.3, 'beta_a':0.8, 'beta_b':2.0,
                       'rho_5':0.05, 'rho_20':0.005,
-                      'period_min':1.}
+                      'period_min':5.}
 
     obs_props = BlendedBinaryPopulation.obs_props + ('target_mag',)
 
@@ -1192,14 +1230,17 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
         super(BGBinaryPopulation, self).__init__(bgstars, copy=copy, **kwargs)
         if self._index is None:
             self._define_stars()
+        #elif len(self._index)==0:
+        #    self._define_stars()
 
     @property
     def dilution_factor(self):
-        F_target = 10**(-0.4*self.stars['target_mag'])
+        F_target = 10**(-0.4*self.stars.target_mag) #stars['target_mag'])
         F_A = 10**(-0.4*self.stars['{}_mag'.format(self.band)]) # primary mag
-        F_B = self.stars.flux_ratio*F_A
+        # Force flux_ratio to be calculated by accessing as property
+        F_B = self.flux_ratio*F_A 
         frac = (F_A + F_B)/(F_A + F_B + F_target)
-        return frac
+        return np.array(frac)
         
     @property
     def b(self):
@@ -1299,7 +1340,7 @@ class PlanetPopulation(KeplerBinaryPopulation):
     def host_stars(self):
         return self._stars
 
-    def _generate_planets(self):
+    def _generate_planets(self, **kwargs):
         N = len(self.host_stars)
         logging.debug('Generating planetary companions for {} stars...'.format(N))
 
@@ -1328,14 +1369,14 @@ class PlanetPopulation(KeplerBinaryPopulation):
         logging.debug('{} planets generated.'.format(Ntot))
 
 
-    def _generate_binaries(self):
+    def _generate_binaries(self, **kwargs):
         """
         Generating companion planets according to parameters
 
         This uses standard independent Poisson process model.
         """
         self._ensure_radius()
-        self._generate_planets()
+        self._generate_planets(**kwargs)
 
 class PoissonPlanetPopulation(PlanetPopulation):
     """
@@ -1351,7 +1392,7 @@ class PoissonPlanetPopulation(PlanetPopulation):
                    'period_min', 'period_max', 'beta_a', 'beta_b')
     default_params = {'N_pl':1.0, 'beta':-0.75, 'alpha':-1.6,
                       'Rp_min':0.75, 'Rp_max':20, 
-                      'period_min':1., 'period_max':10000.,
+                      'period_min':5., 'period_max':10000.,
                       'beta_a':0.8, 'beta_b':2.0}
 
     
