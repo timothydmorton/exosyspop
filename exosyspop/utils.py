@@ -73,3 +73,10 @@ def Pbg_kepler(Kp, b, r=4):
     print(A,B,C)
     return (r/2)**2*(np.polyval(pC, Kp) + 
                      np.polyval(pA, Kp)*np.exp(-b/np.polyval(pB, Kp)))
+
+def trap_mean_depth(T, depth, slope):
+    """Returns mean depth of trapezoid with given params
+    """
+    tau = T / slope
+    
+    return 2*tau/T * depth/2 + (T - 2*tau)/T * depth

@@ -74,11 +74,11 @@ class SimulatedCatalog(Catalog):
         tag = '_regr' if self._trap_regr else ''
 
         # primary properties
-        for col, source_base in zip(['logd_pri', 'dur_pri', 'slope_pri', 'n_pri'],
-                                    ['trap_depth', 'trap_dur', 'trap_slope', 'n']):
+        for col, source_base in zip(['logd_pri', 'dur_pri', 'slope_pri', 'n_pri', 'snr_pri'],
+                                    ['trap_depth', 'trap_dur', 'trap_slope', 'n', 'snr']):
             for m, s in zip(pri_masks, pri_sources):
-                if source_base == 'n':
-                    source_col = 'n_' + s
+                if source_base in ('n', 'snr'):
+                    source_col = source_base + '_' + s
                 else:
                     source_col = source_base + '_' + s + tag
                 df.loc[m, col] = self.loc[m, source_col]
@@ -86,11 +86,11 @@ class SimulatedCatalog(Catalog):
                     df.loc[m, col] = np.log10(df.loc[m, col] * self.loc[m, 'dilution'])
 
         # secondary properties
-        for col, source_base in zip(['logd_sec', 'dur_sec', 'slope_sec', 'n_sec'],
-                                    ['trap_depth', 'trap_dur', 'trap_slope', 'n']):
+        for col, source_base in zip(['logd_sec', 'dur_sec', 'slope_sec', 'n_sec', 'snr_sec'],
+                                    ['trap_depth', 'trap_dur', 'trap_slope', 'n', 'snr']):
             for m, s in zip(sec_masks, sec_sources):
-                if source_base == 'n':
-                    source_col = 'n_' + s
+                if source_base in ('n', 'snr'):
+                    source_col = source_base + '_' + s
                 else:
                     source_col = source_base + '_' + s + tag
                 df.loc[m, col] = self.loc[m, source_col]

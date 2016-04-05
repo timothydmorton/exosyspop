@@ -38,6 +38,8 @@ from .catalog import SimulatedCatalog
 
 from .utils import draw_powerlaw, semimajor, rochelobe
 from .utils import G, MSUN, RSUN, AU, DAY, REARTH, MEARTH
+from .utils import trap_mean_depth
+
 
 class BinaryPopulation(object):
     """
@@ -186,6 +188,20 @@ class BinaryPopulation(object):
     @property
     def dilution_factor(self):
         return np.ones(self.N)
+
+    def get_target(self, i):
+        """Returns i-th target star
+        """
+        return self.stars.ix[i]
+
+    def get_noise(self, i, T=3):
+        """
+        Returns noise in ppm (e.g. CDPP) for i-th target star, over timescale T (hrs)
+        
+        arbitrary default = 100ppm
+        """
+        return 100.
+        
 
     def _initialize_stars(self):
         # Rename appropriate columns
@@ -379,8 +395,8 @@ class BinaryPopulation(object):
                 R2 = qR * self.radius_A[b]
 
                 # Make any out-of-bounds predictions -> nan
-                bad = self._check_MR(M2, R2)
-                R2[bad] = np.nan
+                #bad = self._check_MR(M2, R2)
+                #R2[bad] = -100
             else:
                 M2, R2, flux_ratio = [np.nan]*3
 
@@ -600,6 +616,8 @@ class BinaryPopulation(object):
               * depth
               * duration
               * "slope" (T/tau)
+          * SNR_pri [estimated from trapezoid fit]
+          * SNR_sec
 
         Observations account for both geometry and duty cycle.  
         The latter is accounted for by drawing randomly from a binomial
@@ -614,8 +632,8 @@ class BinaryPopulation(object):
         TODO: incorporate pipeline detection efficiency.
 
         """
-        if fit_trap or use_ic:
-            new = True
+        #if fit_trap: #or use_ic ? took it out.
+        #    new = True
         if new:
             self._generate_binaries(use_ic=use_ic)
             self._generate_orbits()
@@ -738,6 +756,9 @@ class BinaryPopulation(object):
                 catalog.loc[i, 'trap_depth_sec'] = depth_sec
                 catalog.loc[i, 'trap_slope_sec'] = slope_sec
 
+                mean_depth_pri = trap_mean_depth(dur_pri, depth_pri, slope_pri) * catalog.dilution
+                mean_depth_sec = trap_mean_depth(dur_sec, depth_sec, slope_sec) * catalog.dilution
+
         if regr_trap:
             if not self._trap_trained:
                 self._train_trap()
@@ -767,6 +788,20 @@ class BinaryPopulation(object):
                           'trap_slope_sec_regr']:
                     catalog.loc[sec, c] = np.nan
 
+            if not fit_trap:
+                mean_depth_pri = catalog.dilution * trap_mean_depth(catalog.trap_dur_pri_regr, 
+                                                 catalog.trap_depth_pri_regr, 
+                                                 catalog.trap_slope_pri_regr)
+                mean_depth_sec = catalog.dilution * trap_mean_depth(catalog.trap_dur_sec_regr, 
+                                                 catalog.trap_depth_sec_regr, 
+                                                 catalog.trap_slope_sec_regr)
+
+
+        catalog['noise_pri'] = self.get_noise(catalog.host, catalog.T14_pri)
+        catalog['noise_sec'] = self.get_noise(catalog.host, catalog.T14_sec)
+        catalog['snr_pri'] = mean_depth_pri / (catalog['noise_pri']*1e-6) * np.sqrt(catalog['n_pri'])
+        catalog['snr_sec'] = mean_depth_sec / (catalog['noise_sec']*1e-6) * np.sqrt(catalog['n_sec'])
+
         if query is not None:
             return SimulatedCatalog(catalog.query(query))
         else:
@@ -781,8 +816,8 @@ class BinaryPopulation(object):
             _ = self._get_binary_training_data()
         
         # Get simplex indices.  -1 means out-of-bounds
-        s = self._MR_tri.find_simplex(np.array([np.log10(mass),
-                                                np.log10(radius)]).T)
+        s = self._MR_tri.find_simplex(np.ascontiguousarray([np.log10(mass),
+                                                            np.log10(radius)]).T)
         
         return s==-1
 
@@ -937,7 +972,7 @@ class BinaryPopulation(object):
         return X
 
     def _train_trap(self, query=None, N=10000,
-                    plot=False, **kwargs):
+                    plot=False, use_ic=False, **kwargs):
         """
         N is minimum number of simulated transits to train with.
         """
@@ -951,7 +986,9 @@ class BinaryPopulation(object):
             self._mark_calculated('dataspan')
             self._mark_calculated('dutycycle')
 
-        df = self.get_N_observed(query=query, N=N, fit_trap=True, regr_trap=False)
+        df = self.get_N_observed(query=query, N=N, fit_trap=True, 
+                                 new_orbits=True,
+                                 regr_trap=False, use_ic=use_ic)
 
         if temp_obsdata:
             for c in ['dataspan', 'dutycycle']:
@@ -1154,12 +1191,45 @@ class PowerLawBinaryPopulation(BinaryPopulation):
         return draw_powerlaw(beta, (lo, hi), N=N)
 
     
+class KeplerPopulation(BinaryPopulation):
+    cdpp_durations = (1.5, 2.0, 2.5, 3.0, 3.5,
+                      4.5, 5.0, 6.0, 7.5, 9.0,
+                      10.5, 12.0, 12.5, 15.0)
 
-class KeplerBinaryPopulation(BinaryPopulation):
+    def get_noise(self, idx, T=3):
+        s = self.get_target(idx)
+        dur_bin = np.atleast_1d(np.digitize(T, self.cdpp_durations))
+        off_grid = False
+
+        x0 = np.array(self.cdpp_durations)[dur_bin - 1]
+        x1 = np.array(self.cdpp_durations)[dur_bin]
+
+        lo = dur_bin==0
+        hi = dur_bin >= len(self.cdpp_durations)
+        x0[lo] = self.cdpp_durations[0]
+        x1[hi] = self.cdpp_durations[-1]
+
+        # Note: probably better way to do this?
+        f0,i0 = np.modf(x0)
+        col0 = ['rrmscdpp{:02.0f}p{:01.0f}'.format(i,f*10) for i,f in zip(i0, f0)]
+        y0 = np.diag(s[col0])
+
+        f1,i1 = np.modf(x1)
+        col1 = ['rrmscdpp{:02.0f}p{:01.0f}'.format(i,f*10) for i,f in zip(i1, f1)]
+        y1 = np.diag(s[col1])
+
+        #print(x0,y0,s[col0])
+        #print(x1,y1,s[col1])
+
+        y = y0 + (y1 - y0)*(T - x0)/(x1 - x0)
+        y[lo | hi] = y0[lo | hi]
+        return y
+
+class KeplerBinaryPopulation(KeplerPopulation):
     #  Don't use KIC radius here; recalc for consistency.
     prop_columns = {'mass_A':'mass'}
 
-class KeplerPowerLawBinaryPopulation(PowerLawBinaryPopulation):
+class KeplerPowerLawBinaryPopulation(PowerLawBinaryPopulation, KeplerPopulation):
     #  Don't use KIC radius here; recalc for consistency.
     prop_columns = {'mass_A':'mass'}
 
@@ -1339,6 +1409,9 @@ class PlanetPopulation(KeplerBinaryPopulation):
     @property
     def host_stars(self):
         return self._stars
+
+    def get_target(self, i):
+        return self.host_stars.ix[i]
 
     def _generate_planets(self, **kwargs):
         N = len(self.host_stars)
