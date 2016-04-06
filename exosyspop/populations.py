@@ -124,13 +124,13 @@ class BinaryPopulation(object):
     default_name = 'EB'
 
     _attrs = ('name', 'band', 'texp', 'ecc_empirical',
-             '_not_calculated')
+             '_not_calculated', '_use_ic')
     _tables = ()
 
     def __init__(self, stars, name=None,
                  band='Kepler', texp=1626./86400,
-                 ic=DAR, ecc_empirical=False, index=None,
-                 copy=True,
+                 ic=DAR, ecc_empirical=False, use_ic=False,
+                 index=None, copy=True,
                  **kwargs):
 
         # Copy data, so as to avoid surprises.
@@ -149,6 +149,7 @@ class BinaryPopulation(object):
         self.band = band
         self.texp = texp
         self.ecc_empirical = ecc_empirical
+        self.use_ic = use_ic
 
         #Renames columns, sets self._not_calculated appropriately.
         self._initialize_stars()
@@ -343,12 +344,14 @@ class BinaryPopulation(object):
         X = np.append(X, np.array([q]).T, axis=1)
         return X[b, :], b
 
-    def _generate_binaries(self, use_ic=False):
+    def _generate_binaries(self, use_ic=None):
         # Simulate directly from isochrones if desired; 
         # otherwise use regression.
         N = self.N
         logging.debug('Generating binary companions for {} stars...'.format(N))
         
+        if use_ic is None:
+            use_ic = self.use_ic
 
         if use_ic:
             fB, gamma, qmin = self._get_params(['fB', 'gamma', 'qmin'])
@@ -598,7 +601,7 @@ class BinaryPopulation(object):
         
 
     def observe(self, query=None, fit_trap=False, new=False,
-                new_orbits=False, regr_trap=False, use_ic=False,
+                new_orbits=False, regr_trap=False, use_ic=None,
                 dataspan=None, dutycycle=None):
         """
         Returns catalog of the following observable quantities:
@@ -799,8 +802,13 @@ class BinaryPopulation(object):
 
         catalog['noise_pri'] = self.get_noise(catalog.host, catalog.T14_pri)
         catalog['noise_sec'] = self.get_noise(catalog.host, catalog.T14_sec)
-        catalog['snr_pri'] = mean_depth_pri / (catalog['noise_pri']*1e-6) * np.sqrt(catalog['n_pri'])
-        catalog['snr_sec'] = mean_depth_sec / (catalog['noise_sec']*1e-6) * np.sqrt(catalog['n_sec'])
+        if fit_trap or regr_trap:
+            catalog['snr_pri'] = mean_depth_pri / (catalog['noise_pri']*1e-6) * \
+                np.sqrt(catalog['n_pri'])
+            catalog['snr_sec'] = mean_depth_sec / (catalog['noise_sec']*1e-6) * \
+                np.sqrt(catalog['n_sec'])
+            catalog['mean_depth_pri'] = mean_depth_pri
+            catalog['mean_depth_sec'] = mean_depth_sec
 
         if query is not None:
             return SimulatedCatalog(catalog.query(query))
@@ -935,7 +943,7 @@ class BinaryPopulation(object):
         
     def get_N_observed(self, query=None, N=10000, fit_trap=False,
                        regr_trap=True, new=False, new_orbits=True,
-                       use_ic=False,
+                       use_ic=None,
                        verbose=False, dataspan=None, dutycycle=None):
         df = pd.DataFrame()
         
@@ -972,7 +980,7 @@ class BinaryPopulation(object):
         return X
 
     def _train_trap(self, query=None, N=10000,
-                    plot=False, use_ic=False, **kwargs):
+                    plot=False, use_ic=None, **kwargs):
         """
         N is minimum number of simulated transits to train with.
         """
@@ -1201,11 +1209,15 @@ class KeplerPopulation(BinaryPopulation):
         dur_bin = np.atleast_1d(np.digitize(T, self.cdpp_durations))
         off_grid = False
 
-        x0 = np.array(self.cdpp_durations)[dur_bin - 1]
-        x1 = np.array(self.cdpp_durations)[dur_bin]
-
         lo = dur_bin==0
         hi = dur_bin >= len(self.cdpp_durations)
+
+        i0 = dur_bin - 1
+        x0 = np.array(self.cdpp_durations)[i0]
+        i1 = dur_bin.copy()
+        i1[hi] = -1
+        x1 = np.array(self.cdpp_durations)[i1]
+
         x0[lo] = self.cdpp_durations[0]
         x1[hi] = self.cdpp_durations[-1]
 
@@ -1263,7 +1275,6 @@ class TRILEGAL_BinaryPopulation(BinaryPopulation):
         logg = self._stars.logg
         self._stars.loc[:, 'radius_A'] = np.sqrt(G * mass * MSUN / 10**logg)/RSUN
         self._mark_calculated('radius_A')
-
 
 class BGBinaryPopulation(BlendedBinaryPopulation):
     """
@@ -1387,11 +1398,29 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
         # Return as before
         self._index = old_index
 
+class BGPowerLawBinaryPopulation(BGBinaryPopulation, PowerLawBinaryPopulation):
+    param_names = ('fB', 'gamma', 'qmin', 'beta', 
+                   'beta_a', 'beta_b', 'rho_5', 'rho_20', 
+                   'period_min', 'period_max')
+
+    default_params = {'fB':0.15, 'gamma':0.3, 'qmin':0.1, 
+                      'beta':-0.75,
+                      'beta_a':0.8, 'beta_b':2.0,
+                      'rho_5':0.05, 'rho_20':0.005,
+                      'period_min':5., 'period_max':20*365.}
+
+    _sample_period = PowerLawBinaryPopulation._sample_period
+
+
 class TRILEGAL_BGBinaryPopulation(TRILEGAL_BinaryPopulation, BGBinaryPopulation):
     
     # This from BGBinaryPopulation; otherwise want to inherit from 
     # TRILEGAL_BinaryPopulation
     __init__ = BGBinaryPopulation.__init__
+
+class TRILEGAL_BGPowerLawBinaryPopulation(TRILEGAL_BinaryPopulation,
+                                          BGPowerLawBinaryPopulation):
+    __init__ = BGPowerLawBinaryPopulation.__init__
 
 class PlanetPopulation(KeplerBinaryPopulation):
     """

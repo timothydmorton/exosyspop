@@ -33,7 +33,7 @@ class ObservedCatalog(Catalog):
     Primary/secondary are defined observationally: that is,
     the deeper (or only) is called the primary
     """
-    _required_columns = ('period', 
+    _required_columns = ('host', 'period', 
                          'n_pri', 'logd_pri', 'dur_pri', 'slope_pri',
                          'n_sec', 'logd_sec', 'dur_sec', 'slope_sec',
                          'phase_sec')
@@ -51,6 +51,7 @@ class SimulatedCatalog(Catalog):
         for c in ObservedCatalog._required_columns:
             df[c] = np.nan * np.ones(len(self))
 
+        df.host = self.host
         df.period = self.period
 
         # build primary signals
