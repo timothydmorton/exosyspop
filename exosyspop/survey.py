@@ -39,7 +39,7 @@ class GammaCDF(EfficiencyFunction):
         self.b = b
 
     def __call__(self, snr):
-        return  gammainc(self.a, snr*self.b)
+        return  gammainc(self.a, snr/self.b)
 
 class TransitSearch(object):
     """
