@@ -124,7 +124,7 @@ class BinaryPopulation(object):
     default_name = 'EB'
 
     _attrs = ('name', 'band', 'texp', 'ecc_empirical',
-             '_not_calculated', '_use_ic')
+             '_not_calculated', 'use_ic')
     _tables = ()
 
     def __init__(self, stars, name=None,
@@ -1082,7 +1082,7 @@ class BinaryPopulation(object):
             if overwrite:
                 shutil.rmtree(folder)
             else:
-                raise IOError('{} exists.  Set overwrite if desired.')
+                raise IOError('{} exists.  Set overwrite if desired.'.format(folder))
         os.makedirs(folder)
         
         # Write stars table to HDF
@@ -1550,10 +1550,10 @@ class PopulationMixture(object):
     def train_trap(self, **kwargs):
         return [p._train_trap(**kwargs) for p in self.poplist]
                 
-    def observe(self, new=True, **kwargs):
+    def observe(self, **kwargs):
         obs = []
         for pop in self.poplist:
-            o = pop.observe(new=new, **kwargs)
+            o = pop.observe(**kwargs)
             if len(o)>0:
                 o.loc[:, 'population'] = pop.name
             obs.append(o)

@@ -34,8 +34,8 @@ class ObservedCatalog(Catalog):
     the deeper (or only) is called the primary
     """
     _required_columns = ('host', 'period', 
-                         'n_pri', 'logd_pri', 'dur_pri', 'slope_pri',
-                         'n_sec', 'logd_sec', 'dur_sec', 'slope_sec',
+                         'n_pri', 'logd_pri', 'dur_pri', 'slope_pri', 'snr_pri',
+                         'n_sec', 'logd_sec', 'dur_sec', 'slope_sec', 'snr_sec',
                          'phase_sec')
 
 class SimulatedCatalog(Catalog):
@@ -46,7 +46,10 @@ class SimulatedCatalog(Catalog):
         self._observed = None
         self._trap_regr = True
 
-    def _build_observed(self):
+    def observe(self, efficiency=None):
+        """
+        Efficiency function is optional; if provided, must take SNR(s) and return [0,1](s)
+        """
         df = pd.DataFrame()
         for c in ObservedCatalog._required_columns:
             df[c] = np.nan * np.ones(len(self))
@@ -54,12 +57,21 @@ class SimulatedCatalog(Catalog):
         df.host = self.host
         df.period = self.period
 
-        # build primary signals
         d_pri = self.d_pri * self.dilution
         d_sec = self.d_sec * self.dilution
 
-        has_pri = (self.n_pri > 0) & (d_pri > 1e-5)
-        has_sec = (self.n_sec > 0) & (d_sec > 1e-5)
+        if efficiency is None:
+            pri_detected = d_pri > 1e-6
+            sec_detected = d_sec > 1e-6
+        else:
+            u_pri = np.random.random(len(self))
+            u_sec = np.random.random(len(self))
+            pri_detected = u_pri < efficiency(self.snr_pri)
+            sec_detected = u_sec < efficiency(self.snr_sec)
+            
+
+        has_pri = (self.n_pri > 0) & pri_detected
+        has_sec = (self.n_sec > 0) & sec_detected
 
         pri = has_pri & (d_pri > d_sec)
         sec_is_pri = (~has_pri & has_sec) | (has_pri & has_sec & (d_pri < d_sec))
@@ -102,11 +114,12 @@ class SimulatedCatalog(Catalog):
         df.sec_is_pri = sec_is_pri
 
         self._observed = ObservedCatalog(df).dropna(subset=['n_pri'])
+        return self._observed
 
     @property
     def observed(self):
         if self._observed is None:
-            self._build_observed()
+            self.observe()
         return self._observed
 
 

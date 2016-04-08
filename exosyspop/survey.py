@@ -1,6 +1,7 @@
 from __future__ import print_function, division
 
 from scipy.special import gammainc, gamma
+import numpy as np
 
 class EfficiencyFunction(object):
     """
@@ -41,10 +42,3 @@ class GammaCDF(EfficiencyFunction):
     def __call__(self, snr):
         return  gammainc(self.a, snr/self.b)
 
-class TransitSearch(object):
-    """
-    Object representing a transit search.
-    """
-    def __init__(self, efficiency, name=''):
-        self.efficiency = efficiency
-        self.name = name
