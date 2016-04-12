@@ -132,12 +132,20 @@ class BinaryPopulation(object):
                  ic=DAR, ecc_empirical=False, use_ic=False,
                  index=None, copy=True,
                  **kwargs):
-
-        # Copy data, so as to avoid surprises.
-        if copy:
+        # Copy data, so as to avoid surprises.  'stars' may be string,
+        # in which case it will be treated as a folder name from which to load shit
+        if copy and not type(stars)==type(''):
             self._stars = stars.copy()
         else:
             self._stars = stars
+
+        self._is_stub = False
+        if type(stars)==type(''):
+            self._folder = stars
+            self._is_stub = True
+        else:
+            self._folder = None
+
         self._stars_cache = None
 
         if name is None:
@@ -152,7 +160,11 @@ class BinaryPopulation(object):
         self.use_ic = use_ic
 
         #Renames columns, sets self._not_calculated appropriately.
-        self._initialize_stars()
+        #  If a stub object, then just makes sure to define _not_calculated
+        if self._is_stub:
+            self._not_calculated = []
+        else:
+            self._initialize_stars()
 
         self._params = None
         self.set_params(**kwargs)
@@ -168,11 +180,21 @@ class BinaryPopulation(object):
         self._dur_pipeline = None
         self._slope_pipeline = None
 
+    def _restore_from_stub(self):
+        # Does this work correctly?
+        new = self.load(self._folder)
+        for k,v in new.__dict__.items():
+            setattr(self, k, v)
+        self._is_stub = False
+
     @property
     def stars(self):
+        if self._is_stub:
+            self._initialize_stars()
+
         if self._stars_cache is not None:
             return self._stars_cache
-        elif self._index is not None:
+        elif self._index is not None: 
             self._set_index(self._index)
             return self._stars_cache
         else:
@@ -205,6 +227,9 @@ class BinaryPopulation(object):
         
 
     def _initialize_stars(self):
+        if self._is_stub:
+            self._restore_from_stub()
+
         # Rename appropriate columns
         for k,v in self.prop_columns.items():
             self._stars.rename(columns={v:k}, inplace=True)
@@ -234,6 +259,9 @@ class BinaryPopulation(object):
 
     def __getattr__(self, name):
         if name in self._not_calculated:
+            if self._is_stub:
+                self._initialize_stars()
+
             if name in self.primary_props or name in self.secondary_props:
                 logging.debug('Accessing {}, generating binaries.'.format(name))
                 self._generate_binaries()
@@ -278,9 +306,11 @@ class BinaryPopulation(object):
             self._params = self.default_params.copy()
         for k,v in kwargs.items():
             self._params[k] = v
-        for p in self.secondary_props + self.orbital_props:
-            if p not in self._not_calculated:
-                self._not_calculated.append(p)
+
+        if not self._is_stub:
+            for p in self.secondary_props + self.orbital_props:
+                if p not in self._not_calculated:
+                    self._not_calculated.append(p)
 
     @property
     def ic(self):
