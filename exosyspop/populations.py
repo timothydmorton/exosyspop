@@ -124,7 +124,7 @@ class BinaryPopulation(object):
     default_name = 'EB'
 
     _attrs = ('name', 'band', 'texp', 'ecc_empirical',
-             '_not_calculated', 'use_ic')
+             '_not_calculated', 'use_ic', '_params')
     _tables = ()
 
     def __init__(self, stars, name=None,
@@ -173,12 +173,15 @@ class BinaryPopulation(object):
         self._binary_trained = False
         self._dmag_pipeline = None
         self._qR_pipeline = None
-        self._MR_tri = None
+        #self._MR_tri = None
 
         self._trap_trained = False
         self._logd_pipeline = None
         self._dur_pipeline = None
         self._slope_pipeline = None
+
+    def set_folder(self, folder):
+        self._folder = folder
 
     def _restore_from_stub(self):
         # Does this work correctly?
@@ -186,7 +189,7 @@ class BinaryPopulation(object):
         for k,v in new.__dict__.items():
             setattr(self, k, v)
         self._is_stub = False
-
+        
     @property
     def stars(self):
         if self._is_stub:
@@ -257,7 +260,40 @@ class BinaryPopulation(object):
     def _get_params(self, pars):
         return [self.params[p] for p in pars]
 
+    def __getstate__(self):
+        if self._folder is None:
+            raise RuntimeError('Can only pickle object if _folder is set.')
+        d = {}
+        
+        # Things that do not need to get saved/copied:
+        skip = self._tables + ('_stars_cache',)
+
+        # Things that will be restored later
+        # and should thus be set to none for pickle
+        to_none = ('_dmag_pipeline', '_qR_pipeline',
+                   '_logd_pipeline', '_dur_pipeline', 
+                   '_slope_pipeline', '_index')
+
+        for k,v in self.__dict__.items():
+            if k in skip:
+                continue
+            elif k in to_none:
+                d[k] = None
+            else:
+                d[k] = v
+
+        d['_stars'] = self._folder
+        if type(d['_ic'])!=type:
+            d['_ic'] = type(d['_ic'])
+
+        d['_is_stub'] = True
+        return d
+
+    def __setstate__(self, state):
+        self.__dict__ = state
+
     def __getattr__(self, name):
+        #This is buggy & prone to infinite recursion...
         if name in self._not_calculated:
             if self._is_stub:
                 self._initialize_stars()
@@ -302,15 +338,20 @@ class BinaryPopulation(object):
 
         Calling this sets all secondary & orbital properties to "unset"
         """
+        logging.debug('Setting params {}.'.format(kwargs))
+        logging.debug('old params = {}'.format(self._params))
+
         if self._params is None:
             self._params = self.default_params.copy()
         for k,v in kwargs.items():
             self._params[k] = v
 
-        if not self._is_stub:
-            for p in self.secondary_props + self.orbital_props:
-                if p not in self._not_calculated:
-                    self._not_calculated.append(p)
+        if len(kwargs) > 0:
+            if not self._is_stub:
+                logging.debug('secondary/orbital props resetting.')
+                for p in self.secondary_props + self.orbital_props:
+                    if p not in self._not_calculated:
+                        self._not_calculated.append(p)
 
     @property
     def ic(self):
@@ -789,8 +830,13 @@ class BinaryPopulation(object):
                 catalog.loc[i, 'trap_depth_sec'] = depth_sec
                 catalog.loc[i, 'trap_slope_sec'] = slope_sec
 
-                mean_depth_pri = trap_mean_depth(dur_pri, depth_pri, slope_pri) * catalog.dilution
-                mean_depth_sec = trap_mean_depth(dur_sec, depth_sec, slope_sec) * catalog.dilution
+            mean_depth_pri = trap_mean_depth(catalog.trap_dur_pri, 
+                                             catalog.trap_depth_pri, 
+                                             catalog.trap_slope_pri) * catalog.dilution
+            mean_depth_sec = trap_mean_depth(catalog.trap_dur_sec, 
+                                             catalog.trap_depth_sec, 
+                                             catalog.trap_slope_sec) * catalog.dilution
+                
 
         if regr_trap:
             if not self._trap_trained:
@@ -862,8 +908,6 @@ class BinaryPopulation(object):
     def _get_binary_training_data(self):
         """Returns features and target data for dmag/q training
 
-        Also creates _MR_tri :class:`Delaunay` object, which 
-        defines the physically allowed mass-radius region.
         """
         self._ensure_radius()
 
@@ -889,7 +933,7 @@ class BinaryPopulation(object):
         Rs = np.concatenate((R1, R2))
         ok = np.isfinite(Ms) & np.isfinite(Rs)
         points = np.array([np.log10(Ms[ok]), np.log10(Rs[ok])]).T
-        self._MR_tri = Delaunay(points)
+        #self._MR_tri = Delaunay(points)
 
         X = np.append(X, np.array([q]).T, axis=1)
         #X = np.array([M1,R1,age,feh,qR]).T
@@ -1157,6 +1201,8 @@ class BinaryPopulation(object):
         # Record the type of the object, in order to restore it correctly.
         tfile = os.path.join(folder,'type.pkl')
         pickle.dump(type(self), open(tfile, 'wb'))
+        
+        self._folder = folder
 
     @classmethod
     def load(cls, folder):
@@ -1206,6 +1252,8 @@ class BinaryPopulation(object):
                                                           'slope_pipeline.pkl'))
             new._trap_trained = True
 
+        new._folder = folder
+        
         return new
 
 class PowerLawBinaryPopulation(BinaryPopulation):
