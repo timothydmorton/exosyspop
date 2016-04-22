@@ -31,6 +31,7 @@ parser.add_argument('--min_samples', type=int, default=200)
 parser.add_argument('--steps', type=int, default=20)
 parser.add_argument('--file', default='pmc_posterior')
 
+
 args = parser.parse_args()
 
 pop = KeplerPowerLawBinaryPopulation.load(args.pop)
@@ -55,3 +56,5 @@ try:
 except:
 	logging.warning('Posterior not saved to desired location ({}) because of problem!  Saved to recovered.npy'.format(args.file))
 	np.save('recovered', pmc_posterior)
+
+	
