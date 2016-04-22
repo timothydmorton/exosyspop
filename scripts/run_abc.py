@@ -13,6 +13,8 @@ from exosyspop.populations import KeplerPowerLawBinaryPopulation
 from exosyspop.survey import DetectionRamp
 from exosyspop.abc import ABCModel
 
+from simpleabc.simple_abc import pmc_abc
+
 import numpy as np
 
 import logging
