@@ -31,6 +31,8 @@ data = pop.observe(new=True, regr_trap=True).observe(eff)
 
 model = ABCModel(pop, eff)
 
+model._distance_norms = np.array([ 1.        ,  4.49241213,  2.60025772,  2.73734061])
+
 pmc_posterior = pmc_abc(model, data, epsilon_0=0.5, min_samples=200, steps=20, verbose=True,
                        parallel=True, n_procs=10)
 
