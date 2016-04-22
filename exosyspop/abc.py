@@ -53,7 +53,7 @@ class ABCModel(Model):
         """Returns tuple containing summary statistics named in summary_stat_names
         """
         if data is None:
-            return [None]*len(self.summary_stat_names)
+            return [np.nan]*len(self.summary_stat_names)
 
         N = len(data)
         min_logP, max_logP = np.log(self.min_period), np.log(self.max_period)
@@ -80,7 +80,7 @@ class ABCModel(Model):
         return kl_period
     
     def Ndist(self, N1, N2):
-        if N1==0. or N2==0. or N1 is None or N2 is None:
+        if N1==0. or N2==0. or np.isnan(N1) or np.isnan(N2):
             dist = 1
         else:
             dist = max(1 - 1.*N1/N2, 1-1*N2/N1)
@@ -97,6 +97,9 @@ class ABCModel(Model):
         N1, phase_sec1 = summary_stats[1:3]
         N2, phase_sec2 = summary_stats_synth[1:3]
         
+        if N1==0 or N2==0 or np.isnan(N1) or np.isnan(N2):
+            return np.inf
+
         f_sec1 = len(phase_sec1)/float(N1)
         f_sec2 = len(phase_sec2)/float(N2)
         
