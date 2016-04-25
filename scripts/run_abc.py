@@ -3,7 +3,8 @@
 from __future__ import print_function, division
 import sys, os
 
-ROOT = os.getenv('EXOSYSPOP','..')
+HOME = os.environ['HOME']
+ROOT = os.getenv('EXOSYSPOP',os.path.join(HOME,'repositories','exosyspop'))
 
 sys.path.append(ROOT)
 sys.path.append(os.path.join(ROOT,'..'))
@@ -48,13 +49,15 @@ model.null_distance_test()
 #model._distance_norms = np.array([ 1.        ,  4.49241213,  2.60025772,  2.73734061])
 
 pmc_posterior = pmc_abc(model, data, epsilon_0=args.epsilon_0, 
-						min_samples=args.min_samples, steps=args.steps, verbose=True,
-                       parallel=True, n_procs=args.n_procs)
+			min_samples=args.min_samples, 
+			steps=args.steps, verbose=True,
+			parallel=True, n_procs=args.n_procs)
 
 try:
 	np.save(args.file, pmc_posterior)
 except:
-	logging.warning('Posterior not saved to desired location ({}) because of problem!  Saved to recovered.npy'.format(args.file))
+	logging.warning('Posterior not saved to desired location '+
+			'({}) because of problem!  Saved to recovered.npy'.format(args.file))
 	np.save('recovered', pmc_posterior)
 
 	
