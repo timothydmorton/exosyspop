@@ -31,6 +31,7 @@ parser.add_argument('--n_procs', type=int, default=12)
 parser.add_argument('--min_samples', type=int, default=200)
 parser.add_argument('--steps', type=int, default=20)
 parser.add_argument('--file', default='pmc_posterior')
+parser.add_argument('--n_null', type=int, default=100)
 
 
 args = parser.parse_args()
