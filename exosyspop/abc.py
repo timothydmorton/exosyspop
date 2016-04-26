@@ -41,7 +41,6 @@ class ABCModel(Model):
             raise
         except:
             logging.warning('Error generating data: {}'.format(param_dict))
-            raise
 
     @property
     def min_period(self):
