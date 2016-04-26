@@ -45,7 +45,7 @@ eff = DetectionRamp(6,16)
 data = pop.observe(new=True, regr_trap=True).observe(eff)
 
 model = ABCModel(pop, eff)
-print('True model parameters: {}'.format(model.theta_0))
+print('True model parameters {}: {}'.format(model.params, model.theta_0))
 model.null_distance_test(N=args.n_null)
 print('norms = {}'.format(model.distance_norms))
 
