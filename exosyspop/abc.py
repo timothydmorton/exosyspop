@@ -8,7 +8,7 @@ import logging
 
 class ABCModel(Model):
 
-    params = ('fB', 'gamma', 'beta', 'beta_a', 'beta_b') # Names of parameters
+    params = ('fB', 'beta', 'beta_a', 'beta_b', 'gamma') # Names of parameters
     summary_stat_names = ('period_pdf', 'N',
                           'phase_sec', 'depth_pdf') # names of summary statistics
     distance_functions = ('d_period', 'd_N',
