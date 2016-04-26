@@ -67,7 +67,7 @@ class ABCModel(Model):
 
         logd_grid = np.linspace(-4, 0, 1000)
         if N > 1:
-            k = gaussian_kde(np.log10(data.logd_pri))
+            k = gaussian_kde(data.logd_pri)
             logd_pdf = k(logd_grid)
         else:
             logd_pdf = np.ones(len(logd_grid))*1./(4)
