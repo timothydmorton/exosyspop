@@ -115,7 +115,7 @@ class BinaryPopulation(object):
                       'd_pri', 'd_sec', 'T14_pri', 'T14_sec',
                       'T23_pri', 'T23_sec')
                      
-    obs_props = ('dataspan', 'dutycycle', 'b_target')
+    obs_props = ('dataspan', 'dutycycle')
 
     binary_features = ('mass_A', 'radius_A', 'age', 'feh')
 
@@ -233,15 +233,19 @@ class BinaryPopulation(object):
         if self._is_stub:
             self._restore_from_stub()
 
+        # Make sure index is named 'index'
+        self._stars.index.rename('index', inplace=True)
+
         # Rename appropriate columns
         for k,v in self.prop_columns.items():
             self._stars.rename(columns={v:k}, inplace=True)
 
         # if ra, dec provided, but not b_target, then calculate it.
-        if 'ra' in self._stars and 'b_target' not in self._stars:
+        if 'ra' in self._stars and 'b_target' not in self._stars and 'b_target' in self.obs_props:
             if 'b' in self._stars:
                 self._stars.rename(columns={'b':'b_target'}, inplace=True)
             else:
+                logging.info('Calculating galactic latitudes of target stars...')
                 c = SkyCoord(self._stars.ra, self._stars.dec, unit='deg')
                 self._stars.loc[:, 'b_target'] = c.galactic.b.deg
 
@@ -677,6 +681,7 @@ class BinaryPopulation(object):
         """
         Returns catalog of the following observable quantities:
           
+          * host
           * n_pri
           * n_sec
           * d_pri
@@ -1368,7 +1373,7 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
                       'rho_5':0.05, 'rho_20':0.005,
                       'period_min':5.}
 
-    obs_props = BlendedBinaryPopulation.obs_props + ('target_mag',)
+    obs_props = BlendedBinaryPopulation.obs_props + ('target_mag','b_target')
 
     default_name = 'BGEB'
 

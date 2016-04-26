@@ -8,15 +8,16 @@ import logging
 
 class ABCModel(Model):
 
-    params = ('fB', 'beta', 'beta_a', 'beta_b') # Names of parameters
-    summary_stat_names = ('period_pdf','N',
-                          'phase_sec') # names of summary statistics
+    params = ('fB', 'gamma', 'beta', 'beta_a', 'beta_b') # Names of parameters
+    summary_stat_names = ('period_pdf', 'N',
+                          'phase_sec', 'depth_pdf') # names of summary statistics
     distance_functions = ('d_period', 'd_N',
-                          'd_fsec', 'd_phase') # names of different distance function methods 
+                          'd_fsec', 'd_phase',
+                          'd_depth') # names of different distance function methods 
 
-    theta_0 = (0.14, -0.95, 0.8, 2.0)
-    bounds = [(0,1), (-1.5,0), (0,5),(0,5)]
-    prior = [uniform(0,1), uniform(-1.5, 1.5), uniform(0,5), uniform(0,5)]    
+    theta_0 = (0.14, -0.95, 0.8, 2.0, 0.3)
+    bounds = [(0,1), (-1.5,0), (0,5), (0,5), (-1, 2)]
+    prior = [uniform(0,1), uniform(-1.5, 1.5), uniform(0,5), uniform(0,5), uniform(-1,3)]    
     
     
     def __init__(self, population, eff=None):
@@ -64,21 +65,37 @@ class ABCModel(Model):
         else:
             logP_pdf = np.ones(len(logP_grid))*1./(max_logP - min_logP)
 
+        logd_grid = np.linspace(-4, 0, 1000)
+        if N > 1:
+            k = gaussian_kde(np.log10(data.logd_pri))
+            logd_pdf = k(logd_grid)
+        else:
+            logd_pdf = np.ones(len(logd_grid))*1./(4)
+
         phase_sec = data.phase_sec.dropna().values
             
-        return logP_pdf, N, phase_sec
+        return logP_pdf, N, phase_sec, logd_pdf
+
+    def d_pdf_1d(self, pdf1, pdf2):
+        try:
+            len(pdf1)
+            len(pdf2)
+        except:
+            return np.inf
+        return entropy(pdf1, pdf2)
 
     def d_period(self, summary_stats, summary_stats_synth):
         p1 = summary_stats[0]
         p2 = summary_stats_synth[0]
-        try:
-            len(p1)
-            len(p2)
-        except:
-            return np.inf
-        kl_period = entropy(p1, p2)
-        return kl_period
+
+        return self.d_pdf_1d(p1, p2)
     
+    def d_depth(self, summary_stats, summary_stats_synth):
+        p1 = summary_stats[3]
+        p2 = summary_stats_synth[3]
+
+        return self.d_pdf_1d(p1, p2) 
+
     def Ndist(self, N1, N2):
         if N1==0. or N2==0. or np.isnan(N1) or np.isnan(N2):
             dist = 1
