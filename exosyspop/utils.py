@@ -21,7 +21,7 @@ def draw_powerlaw(alpha, rng, N=1):
     x0, x1 = rng
     x0_alpha_p_1 = x0**(alpha + 1)
     C = (alpha + 1) / (x1**(alpha + 1) - x0_alpha_p_1)
-    
+
     if N==1:
         u = np.random.random()
     else:
@@ -42,7 +42,7 @@ def rochelobe(q):
     """returns r1/a; q = M1/M2"""
     N = len(q)
     r = np.empty(N)
-    for i in xrange(N):
+    for i in range(N):
         q_13 = q[i]**(1./3)
         q_23 = q_13*q_13
         r[i] = 0.49*q_23/(0.6*q_23 + math.log(1+q_13))
@@ -58,7 +58,7 @@ def withinroche(semimajors,M1,R1,M2,R2,N=1):
 
 def Pbg_kepler(Kp, b, r=4):
     """Expected number of BG stars within r" in Kepler field within (Kp, Kp + 10)
-    
+
     """
     if Kp < 11:
         Kp = 11
@@ -71,12 +71,12 @@ def Pbg_kepler(Kp, b, r=4):
     B = np.polyval(pB, Kp)
     C = np.polyval(pC, Kp)
     print(A,B,C)
-    return (r/2)**2*(np.polyval(pC, Kp) + 
+    return (r/2)**2*(np.polyval(pC, Kp) +
                      np.polyval(pA, Kp)*np.exp(-b/np.polyval(pB, Kp)))
 
 def trap_mean_depth(T, depth, slope):
     """Returns mean depth of trapezoid with given params
     """
     tau = T / slope
-    
+
     return 2*tau/T * depth/2 + (T - 2*tau)/T * depth

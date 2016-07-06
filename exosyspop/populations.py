@@ -43,11 +43,6 @@ from .utils import draw_powerlaw, semimajor, rochelobe
 from .utils import G, MSUN, RSUN, AU, DAY, REARTH, MEARTH
 from .utils import trap_mean_depth
 
-try:
-    xrange
-except NameError:
-    xrange = range
-
 
 class BinaryPopulation(object):
     """
@@ -619,7 +614,7 @@ class BinaryPopulation(object):
         occ[T14_sec==0] = False
 
         flux_ratio = self.flux_ratio
-        for i in xrange(N):
+        for i in range(N):
             if tra[i]:
                 f = _quadratic_ld._quadratic_ld(np.array([b_pri[i]]), k[i], 0.394, 0.296, 1)[0]
                 F2 = flux_ratio[i]
@@ -806,7 +801,7 @@ class BinaryPopulation(object):
             d_sec = catalog.d_sec.values
 
             trapfit_kwargs = dict(npts=50, width=3, cadence=self.texp)
-            for i in xrange(N):
+            for i in range(N):
                 # Primary
                 if tra[i] and d_pri[i] > 0:
                     try:
