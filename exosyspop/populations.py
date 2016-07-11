@@ -19,7 +19,10 @@ from sklearn.externals import joblib
 
 from scipy.spatial import Delaunay
 
-import cPickle as pickle
+try:
+    import cPickle as pickle
+except ImportError:
+    import pickle
 
 from astropy.coordinates import SkyCoord
 
@@ -31,7 +34,7 @@ DAR.radius(1,9.5,0) #prime the isochrone object
 from vespa.stars.utils import draw_eccs # this is a function that returns
                                         # empirically reasonable eccentricities
                                         # for given binary periods.
-from vespa.transit_basic import (_quadratic_ld, eclipse_tt, 
+from vespa.transit_basic import (_quadratic_ld, eclipse_tt,
                                  NoEclipseError, NoFitError)
 
 from .catalog import SimulatedCatalog
@@ -45,7 +48,7 @@ class BinaryPopulation(object):
     """
     Base class for binary population simulations.
 
-    Initialized with population of primary stars, which 
+    Initialized with population of primary stars, which
     is a DataFrame containing, at minimum, `mass_A`, `feh`,
     `dataspan`, `dutycycle` parameters.  `radius_A` and `age`
     are also appreciated, but will be generated if not provided.
@@ -55,12 +58,12 @@ class BinaryPopulation(object):
     example, the Kepler stellar catalog has `mass` instead
     of `mass_A`, so the KeplerBinaryPopulation defines this.
 
-    This object can very quickly generate different random 
+    This object can very quickly generate different random
     populations of binary companions according to the provided
-    parameters, and "observe" the populations to generate a 
-    synthetic catalog.  The machinery that allows this to happen efficiently is 
+    parameters, and "observe" the populations to generate a
+    synthetic catalog.  The machinery that allows this to happen efficiently is
     training two different regression steps that enable bypassing
-    more computationally intensive steps.  
+    more computationally intensive steps.
 
     The first of these regressions is to predict the dmag between the
     secondary and primary, as well as the radius ratio, as a function
@@ -77,10 +80,10 @@ class BinaryPopulation(object):
     population about a factor of 10x faster than direct calls to the
     :class:`Isochrone`.
 
-    The second regression is more costly to train (~1 min) but saves 
+    The second regression is more costly to train (~1 min) but saves
     correspondingly much more computation time---this is a regression
-    that predicts the exact trapezoidal shape parameters as a function of 
-    the following easy-to-compute parameters: 
+    that predicts the exact trapezoidal shape parameters as a function of
+    the following easy-to-compute parameters:
 
       * total duration `T14` (adjusted for exposure time),
       * ingress/egress duration `tau` (adjusted for exposure time),
@@ -97,7 +100,7 @@ class BinaryPopulation(object):
 
     """
     #parameters for binary population (for period in years)
-    param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp', 
+    param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp',
                    'beta_a', 'beta_b', 'period_min')
     #default_params = (0.4, 0.3, 0.1, np.log10(250), 2.3, 0.8, 2.0)
 
@@ -114,7 +117,7 @@ class BinaryPopulation(object):
                       'b_pri', 'b_sec', 'k', 'tra', 'occ',
                       'd_pri', 'd_sec', 'T14_pri', 'T14_sec',
                       'T23_pri', 'T23_sec')
-                     
+
     obs_props = ('dataspan', 'dutycycle')
 
     binary_features = ('mass_A', 'radius_A', 'age', 'feh')
@@ -189,7 +192,7 @@ class BinaryPopulation(object):
         for k,v in new.__dict__.items():
             setattr(self, k, v)
         self._is_stub = False
-        
+
     @property
     def stars(self):
         if self._is_stub:
@@ -197,7 +200,7 @@ class BinaryPopulation(object):
 
         if self._stars_cache is not None:
             return self._stars_cache
-        elif self._index is not None: 
+        elif self._index is not None:
             self._set_index(self._index)
             return self._stars_cache
         else:
@@ -223,11 +226,11 @@ class BinaryPopulation(object):
     def get_noise(self, i, T=3):
         """
         Returns noise in ppm (e.g. CDPP) for i-th target star, over timescale T (hrs)
-        
+
         arbitrary default = 100ppm
         """
         return 100.
-        
+
 
     def _initialize_stars(self):
         if self._is_stub:
@@ -250,16 +253,16 @@ class BinaryPopulation(object):
                 self._stars.loc[:, 'b_target'] = c.galactic.b.deg
 
         # Create all the columns that will be filled later
-        self._not_calculated = [c for c in self.primary_props + 
-                                self.secondary_props + 
-                                self.orbital_props + self.obs_props 
+        self._not_calculated = [c for c in self.primary_props +
+                                self.secondary_props +
+                                self.orbital_props + self.obs_props
                                 if c not in self._stars]
 
         for c in self._not_calculated:
             if c in ['tra','occ']:
                 self._stars.loc[:, c] = False
             else:
-                self._stars.loc[:, c] = np.nan        
+                self._stars.loc[:, c] = np.nan
 
     def _get_params(self, pars):
         return [self.params[p] for p in pars]
@@ -268,14 +271,14 @@ class BinaryPopulation(object):
         if self._folder is None:
             raise RuntimeError('Can only pickle object if _folder is set.')
         d = {}
-        
+
         # Things that do not need to get saved/copied:
         skip = self._tables + ('_stars_cache',)
 
         # Things that will be restored later
         # and should thus be set to none for pickle
         to_none = ('_dmag_pipeline', '_qR_pipeline',
-                   '_logd_pipeline', '_dur_pipeline', 
+                   '_logd_pipeline', '_dur_pipeline',
                    '_slope_pipeline', '_index')
 
         for k,v in self.__dict__.items():
@@ -320,7 +323,7 @@ class BinaryPopulation(object):
             self._not_calculated.pop(i)
         except ValueError:
             pass
-        
+
     def _remove_prop(self, prop):
         self.stars.loc[:, prop] = np.nan
         if prop not in self._not_calculated:
@@ -338,7 +341,7 @@ class BinaryPopulation(object):
 
     def set_params(self, **kwargs):
         """
-        Set values of parameters. 
+        Set values of parameters.
 
         Calling this sets all secondary & orbital properties to "unset"
         """
@@ -420,25 +423,25 @@ class BinaryPopulation(object):
         return X[b, :], b
 
     def _generate_binaries(self, use_ic=None):
-        # Simulate directly from isochrones if desired; 
+        # Simulate directly from isochrones if desired;
         # otherwise use regression.
         N = self.N
         logging.debug('Generating binary companions for {} stars...'.format(N))
-        
+
         if use_ic is None:
             use_ic = self.use_ic
 
         if use_ic:
             fB, gamma, qmin = self._get_params(['fB', 'gamma', 'qmin'])
             b = np.random.random(N) < fB
-        
+
             self._ensure_radius()
-            
+
             # Simulate mass ratio
             minmass = self.ic.minmass
             qmin = np.maximum(qmin, minmass/self.mass_A)
             q = draw_powerlaw(gamma, (qmin, 1), N=N)
-    
+
             ic = self.ic
             M1 = np.ascontiguousarray(self.mass_A[b])
             M2 = np.ascontiguousarray((q * self.mass_A)[b])
@@ -451,9 +454,9 @@ class BinaryPopulation(object):
 
         else:
             X, b = self._simulate_binary_features()
-            
+
             # Make sure there are some binaries; otherwise, skip regression.
-            if  b.sum() > 0:                
+            if  b.sum() > 0:
 
                 #q will always be last column, regardless of other features
                 q = X[:, -1]  #already binary-masked
@@ -505,19 +508,19 @@ class BinaryPopulation(object):
         """
         mu_logp, sig_logp, period_min = self._get_params(['mu_logp', 'sig_logp',
                                                           'period_min'])
-        
+
         #  don't let anything shorter than minimum period
         period = 10**(np.random.normal(mu_logp, sig_logp, size=N)) * 365.25
         bad = period < period_min
         nbad = bad.sum()
         while nbad > 0:
-            period[bad] = 10**(np.random.normal(mu_logp, 
+            period[bad] = 10**(np.random.normal(mu_logp,
                                                 sig_logp, size=nbad)) * 365.25
             bad = period < period_min
             nbad = bad.sum()
 
-        return period 
-    
+        return period
+
     def _sample_ecc(self, N):
         """
         Return N samples from eccentricity distribution
@@ -564,10 +567,10 @@ class BinaryPopulation(object):
         tooclose = (radius_A + radius_B)*RSUN > 3*rochelobe(1./q)*peri
         ecc[tooclose] = 0.
         logging.debug('{} orbits assigned to ecc=0'.format(tooclose.sum()))
-        
+
 
         w = np.random.random(N) * 2 * np.pi
-        inc = np.arccos(np.random.random(N))        
+        inc = np.arccos(np.random.random(N))
         aR = a / (radius_A * RSUN)
         if geom_only:
             # add the above properties
@@ -600,7 +603,7 @@ class BinaryPopulation(object):
             np.sqrt(1-ecc**2)/(1+ecc*np.sin(w))
         T23_sec = period/np.pi*np.arcsin(radius_A*RSUN/a * np.sqrt((1-k)**2 - b_sec**2)/np.sin(inc)) *\
             np.sqrt(1-ecc**2)/(1-ecc*np.sin(w))
-    
+
         T14_pri[np.isnan(T14_pri)] = 0.
         T14_sec[np.isnan(T14_sec)] = 0.
         T23_pri[np.isnan(T23_pri)] = 0.
@@ -611,7 +614,7 @@ class BinaryPopulation(object):
         occ[T14_sec==0] = False
 
         flux_ratio = self.flux_ratio
-        for i in xrange(N):
+        for i in range(N):
             if tra[i]:
                 f = _quadratic_ld._quadratic_ld(np.array([b_pri[i]]), k[i], 0.394, 0.296, 1)[0]
                 F2 = flux_ratio[i]
@@ -673,14 +676,14 @@ class BinaryPopulation(object):
         sec = np.clip(pri, 0, 1)
 
         return np.maximum(pri, sec).sum()
-        
+
 
     def observe(self, query=None, fit_trap=False, new=False,
                 new_orbits=False, regr_trap=False, use_ic=None,
                 dataspan=None, dutycycle=None):
         """
         Returns catalog of the following observable quantities:
-          
+
           * host
           * n_pri
           * n_sec
@@ -698,13 +701,13 @@ class BinaryPopulation(object):
           * SNR_pri [estimated from trapezoid fit]
           * SNR_sec
 
-        Observations account for both geometry and duty cycle.  
+        Observations account for both geometry and duty cycle.
         The latter is accounted for by drawing randomly from a binomial
         distribution B(n_exp, dutycycle), where n_exp is the number
         of eclipses that would be observed with 100% duty cycle.  This
         is done independently for primary and secondary eclipses.
 
-        If `dataspan` and `dutycycle` are not provided, then they 
+        If `dataspan` and `dutycycle` are not provided, then they
         must be part of the `stars` DataFrame.  If they weren't part
         before, they will be added by this function.
 
@@ -751,10 +754,10 @@ class BinaryPopulation(object):
 
         # Determine number of primary & secondary eclipses, assuming perfect duty cycle
         n_pri_ideal = np.floor(final_phase) * df.tra
-        n_sec_ideal = (np.floor(final_phase + secondary_phase) - 
+        n_sec_ideal = (np.floor(final_phase + secondary_phase) -
                        np.floor(initial_phase + secondary_phase))*df.occ
 
-        # Correct for duty cycle.  
+        # Correct for duty cycle.
         # Each event has probability (1-dutycycle) of landing in a gap.
         n_pri = np.zeros(N)
         n_sec = np.zeros(N)
@@ -767,7 +770,7 @@ class BinaryPopulation(object):
             if n2 > 0:
                 #n_sec[i] = binom(n2,d).rvs()
                 n_sec[i] = np.random.binomial(n2, d)
-        
+
         df.loc[:, 'n_pri'] = n_pri
         df.loc[:, 'n_sec'] = n_sec
         df.loc[:, 'phase_sec'] = secondary_phase
@@ -798,13 +801,13 @@ class BinaryPopulation(object):
             d_sec = catalog.d_sec.values
 
             trapfit_kwargs = dict(npts=50, width=3, cadence=self.texp)
-            for i in xrange(N):
+            for i in range(N):
                 # Primary
                 if tra[i] and d_pri[i] > 0:
                     try:
                         trapfit = eclipse_tt(P=period[i], p0=k[i], b=b_pri[i],
                                          aR=aR[i], frac=1/(1 + flux_ratio[i]),
-                                         u1=0.394, u2=0.296, 
+                                         u1=0.394, u2=0.296,
                                          ecc=ecc[i], w=w[i]*180/np.pi,
                                          **trapfit_kwargs)
                         dur_pri, depth_pri, slope_pri = trapfit
@@ -816,9 +819,9 @@ class BinaryPopulation(object):
                 if occ[i] and d_sec[i] > 0:
                     try:
                         trapfit = eclipse_tt(P=period[i], p0=k[i], b=b_sec[i],
-                                         aR=aR[i], 
+                                         aR=aR[i],
                                          frac=flux_ratio[i]/(1 + flux_ratio[i]),
-                                         u1=0.394, u2=0.296, 
+                                         u1=0.394, u2=0.296,
                                          ecc=ecc[i], w=w[i]*180/np.pi,
                                          sec=True,
                                          **trapfit_kwargs)
@@ -835,13 +838,13 @@ class BinaryPopulation(object):
                 catalog.loc[i, 'trap_depth_sec'] = depth_sec
                 catalog.loc[i, 'trap_slope_sec'] = slope_sec
 
-            mean_depth_pri = trap_mean_depth(catalog.trap_dur_pri, 
-                                             catalog.trap_depth_pri, 
+            mean_depth_pri = trap_mean_depth(catalog.trap_dur_pri,
+                                             catalog.trap_depth_pri,
                                              catalog.trap_slope_pri) * catalog.dilution
-            mean_depth_sec = trap_mean_depth(catalog.trap_dur_sec, 
-                                             catalog.trap_depth_sec, 
+            mean_depth_sec = trap_mean_depth(catalog.trap_dur_sec,
+                                             catalog.trap_depth_sec,
                                              catalog.trap_slope_sec) * catalog.dilution
-                
+
 
         if regr_trap:
             if not self._trap_trained:
@@ -873,11 +876,11 @@ class BinaryPopulation(object):
                     catalog.loc[sec, c] = np.nan
 
             if not fit_trap:
-                mean_depth_pri = catalog.dilution * trap_mean_depth(catalog.trap_dur_pri_regr, 
-                                                 catalog.trap_depth_pri_regr, 
+                mean_depth_pri = catalog.dilution * trap_mean_depth(catalog.trap_dur_pri_regr,
+                                                 catalog.trap_depth_pri_regr,
                                                  catalog.trap_slope_pri_regr)
-                mean_depth_sec = catalog.dilution * trap_mean_depth(catalog.trap_dur_sec_regr, 
-                                                 catalog.trap_depth_sec_regr, 
+                mean_depth_sec = catalog.dilution * trap_mean_depth(catalog.trap_dur_sec_regr,
+                                                 catalog.trap_depth_sec_regr,
                                                  catalog.trap_slope_sec_regr)
 
 
@@ -903,11 +906,11 @@ class BinaryPopulation(object):
         """
         if self._MR_tri is None:
             _ = self._get_binary_training_data()
-        
+
         # Get simplex indices.  -1 means out-of-bounds
         s = self._MR_tri.find_simplex(np.ascontiguousarray([np.log10(mass),
                                                             np.log10(radius)]).T)
-        
+
         return s==-1
 
     def _get_binary_training_data(self):
@@ -931,7 +934,7 @@ class BinaryPopulation(object):
         age = np.ascontiguousarray(self.age)
         R2 = ic.radius(M2, age, feh)
         R1 = self.radius_A
-        qR = R2/R1        
+        qR = R2/R1
 
         # defines physically allowed region in M-R space
         Ms = np.concatenate((M1, M2))
@@ -967,7 +970,7 @@ class BinaryPopulation(object):
         #regr = LinearRegression
         poly_kwargs = {'degree':3, 'interaction_only':False}
         dmag_pipeline = Pipeline([#('poly', PolynomialFeatures(**poly_kwargs)),
-                                  ('scale', StandardScaler()), 
+                                  ('scale', StandardScaler()),
                                   ('regress', regr(**kwargs))])
 
         dmag_pipeline.fit(Xtrain,ytrain);
@@ -976,7 +979,7 @@ class BinaryPopulation(object):
             fig, axes = plt.subplots(1,2, figsize=(10,4))
             axes[0].plot(ytest, yp, 'o', ms=1, mew=0.2, alpha=0.3)
             axes[0].plot(ytest, ytest, 'r-', lw=1, alpha=0.5)
-            
+
         score = dmag_pipeline.score(Xtest, ytest)
         print('{0}: dmag regressor trained, R2={1}'.format(self.name, score))
         self._dmag_pipeline = dmag_pipeline
@@ -999,7 +1002,7 @@ class BinaryPopulation(object):
         ytrain = y[itrain]
 
         qR_pipeline = Pipeline([#('poly', PolynomialFeatures(**poly_kwargs)),
-                               ('scale', StandardScaler()), 
+                               ('scale', StandardScaler()),
                                ('regress', regr(**kwargs))])
 
         qR_pipeline.fit(Xtrain, ytrain)
@@ -1019,13 +1022,13 @@ class BinaryPopulation(object):
         self._binary_trained = True
 
         return Xtest, (ytest_dmag, yp_dmag), (ytest_qR, yp_qR)
-        
+
     def get_N_observed(self, query=None, N=10000, fit_trap=False,
                        regr_trap=True, new=False, new_orbits=True,
                        use_ic=None,
                        verbose=False, dataspan=None, dutycycle=None):
         df = pd.DataFrame()
-        
+
         while len(df) < N:
             df = pd.concat([df, self.observe(query=query, new=new,
                                              new_orbits=new_orbits,
@@ -1036,7 +1039,7 @@ class BinaryPopulation(object):
         return SimulatedCatalog(df.iloc[:N].reset_index())
 
     def _get_trap_features(self, df, sec_only=False, pri_only=False):
-        #pri = ~np.isnan(df.trap_depth_pri.values) 
+        #pri = ~np.isnan(df.trap_depth_pri.values)
         #sec = ~np.isnan(df.trap_depth_sec.values)
         pri = (df.T14_pri.values > 0) & (df.d_pri.values > 0)
         sec = (df.T14_sec.values > 0) & (df.d_sec.values > 0)
@@ -1073,7 +1076,7 @@ class BinaryPopulation(object):
             self._mark_calculated('dataspan')
             self._mark_calculated('dutycycle')
 
-        df = self.get_N_observed(query=query, N=N, fit_trap=True, 
+        df = self.get_N_observed(query=query, N=N, fit_trap=True,
                                  new_orbits=True,
                                  regr_trap=False, use_ic=use_ic)
 
@@ -1082,7 +1085,7 @@ class BinaryPopulation(object):
                 self._remove_prop(c)
 
         X = self._get_trap_features(df)
-        
+
         pri = (df.T14_pri.values > 0) & (df.d_pri.values > 0)
         sec = (df.T14_sec.values > 0) & (df.d_sec.values > 0)
         y1 = np.log10(np.concatenate((df.trap_depth_pri.values[pri],
@@ -1091,8 +1094,8 @@ class BinaryPopulation(object):
                             df.trap_dur_sec.values[sec]))
         y3 = np.concatenate((df.trap_slope_pri.values[pri],
                             df.trap_slope_sec.values[sec]))
-        ok = np.isfinite(X.sum(axis=1) + y1 + y2 + y3) 
-        
+        ok = np.isfinite(X.sum(axis=1) + y1 + y2 + y3)
+
         # Train/test split
         u = np.random.random(X.shape[0])
         itest = (u < 0.2) & ok
@@ -1153,7 +1156,7 @@ class BinaryPopulation(object):
         self._slope_score = score
 
         self._trap_trained = True
-        
+
         return self._logd_pipeline, self._dur_pipeline, self._slope_pipeline
 
     def save(self, folder, overwrite=False):
@@ -1163,7 +1166,7 @@ class BinaryPopulation(object):
             else:
                 raise IOError('{} exists.  Set overwrite if desired.'.format(folder))
         os.makedirs(folder)
-        
+
         # Write stars table to HDF
         self._record_stars_changes()
         self._stars.to_hdf(os.path.join(folder, 'stars.h5'), 'df')
@@ -1182,31 +1185,31 @@ class BinaryPopulation(object):
         for tbl in self._tables:
             df = getattr(self, tbl)
             df.to_hdf(os.path.join(folder, '{}.h5'.format(tbl)), 'df')
-        
+
         # Save trained pipelines, if they exist
         pline_folder = os.path.join(folder,'pipelines')
         if self._binary_trained:
             if not os.path.exists(pline_folder):
                 os.makedirs(pline_folder)
-            joblib.dump(self._dmag_pipeline, 
+            joblib.dump(self._dmag_pipeline,
                         os.path.join(pline_folder, 'dmag_pipeline.pkl'))
-            joblib.dump(self._qR_pipeline, 
+            joblib.dump(self._qR_pipeline,
                         os.path.join(pline_folder, 'qR_pipeline.pkl'))
 
         if self._trap_trained:
             if not os.path.exists(pline_folder):
                 os.makedirs(pline_folder)
-            joblib.dump(self._logd_pipeline, 
+            joblib.dump(self._logd_pipeline,
                         os.path.join(pline_folder, 'logd_pipeline.pkl'))
-            joblib.dump(self._dur_pipeline, 
+            joblib.dump(self._dur_pipeline,
                         os.path.join(pline_folder, 'dur_pipeline.pkl'))
-            joblib.dump(self._slope_pipeline, 
+            joblib.dump(self._slope_pipeline,
                         os.path.join(pline_folder, 'slope_pipeline.pkl'))
 
         # Record the type of the object, in order to restore it correctly.
         tfile = os.path.join(folder,'type.pkl')
         pickle.dump(type(self), open(tfile, 'wb'))
-        
+
         self._folder = folder
 
     @classmethod
@@ -1216,7 +1219,7 @@ class BinaryPopulation(object):
         for c in ['tra','occ']:
             if c in stars:
                 stars.loc[:,c] = stars.loc[:,c].astype(bool)
-            
+
         attrs = store.get_storer('df').attrs
 
         if 'index' in store:
@@ -1258,19 +1261,19 @@ class BinaryPopulation(object):
             new._trap_trained = True
 
         new._folder = folder
-        
+
         return new
 
 class PowerLawBinaryPopulation(BinaryPopulation):
     """
     This describes a population with power-law period distribution
- 
+
     Appropriate for closer-in binary population probed with EBs.
 
     Default fB, beta tuned to roughly match with default lognormal
     period distribution from BinaryPopulation
     """
-    param_names = ('fB', 'gamma', 'qmin', 'beta', 
+    param_names = ('fB', 'gamma', 'qmin', 'beta',
                    'beta_a', 'beta_b', 'period_min', 'period_max')
 
     default_params = {'fB':0.15, 'gamma':0.3, 'qmin':0.1,
@@ -1281,7 +1284,7 @@ class PowerLawBinaryPopulation(BinaryPopulation):
         beta, lo, hi = self._get_params(['beta', 'period_min', 'period_max'])
         return draw_powerlaw(beta, (lo, hi), N=N)
 
-    
+
 class KeplerPopulation(BinaryPopulation):
     cdpp_durations = (1.5, 2.0, 2.5, 3.0, 3.5,
                       4.5, 5.0, 6.0, 7.5, 9.0,
@@ -1334,15 +1337,15 @@ class BlendedBinaryPopulation(BinaryPopulation):
     Class for diluted binary populations
 
     Implement `_get_dilution` method to dilute the depths
-    """    
+    """
     default_name = 'blended EB'
 
     def _generate_orbits(self, *args, **kwargs):
         # First, proceed as before...
         super(BlendedBinaryPopulation, self)._generate_orbits(*args, **kwargs)
-        
+
 class TRILEGAL_BinaryPopulation(BinaryPopulation):
-    prop_columns = {'age':'logAge', 'feh':'[M/H]', 
+    prop_columns = {'age':'logAge', 'feh':'[M/H]',
                     'mass_A':'m_ini'}
 
     binary_features = ('mass_A', 'feh', 'age', 'logL', 'logTe', 'logg')
@@ -1364,10 +1367,10 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
     targets is DataFrame of target stars
     bgstars is DataFrame of background stars
     """
-    param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp', 
-                   'beta_a', 'beta_b', 'rho_5', 'rho_20', 
+    param_names = ('fB', 'gamma', 'qmin', 'mu_logp', 'sig_logp',
+                   'beta_a', 'beta_b', 'rho_5', 'rho_20',
                    'period_min')
-    default_params = {'fB':0.44, 'gamma':0.3, 'qmin':0.1, 
+    default_params = {'fB':0.44, 'gamma':0.3, 'qmin':0.1,
                       'mu_logp':np.log10(250),
                       'sig_logp':2.3, 'beta_a':0.8, 'beta_b':2.0,
                       'rho_5':0.05, 'rho_20':0.005,
@@ -1380,7 +1383,7 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
     _attrs = BlendedBinaryPopulation._attrs + ('r_blend', 'target_band')
     _tables = BlendedBinaryPopulation._tables + ('targets',)
 
-    def __init__(self, targets, bgstars, r_blend=4, 
+    def __init__(self, targets, bgstars, r_blend=4,
                  target_band='kepmag', copy=True, **kwargs):
         # Copy data to avoid surprises
         if copy:
@@ -1402,10 +1405,10 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
         F_target = 10**(-0.4*self.stars.target_mag) #stars['target_mag'])
         F_A = 10**(-0.4*self.stars['{}_mag'.format(self.band)]) # primary mag
         # Force flux_ratio to be calculated by accessing as property
-        F_B = self.flux_ratio*F_A 
+        F_B = self.flux_ratio*F_A
         frac = (F_A + F_B)/(F_A + F_B + F_target)
         return np.array(frac)
-        
+
     @property
     def b(self):
         """
@@ -1468,7 +1471,7 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
         self._set_index(i_bg)
 
         # Reset binary/orbital properties (possible bug alert by ignoring obs_props?)
-        self._not_calculated = [c for c in self.secondary_props + 
+        self._not_calculated = [c for c in self.secondary_props +
                                 self.orbital_props]
 
     def _train_pipelines(self, **kwargs):
@@ -1477,16 +1480,16 @@ class BGBinaryPopulation(BlendedBinaryPopulation):
         self._index = self._stars.index
 
         super(BGBinaryPopulation, self)._train_pipelines(**kwargs)
-        
+
         # Return as before
         self._index = old_index
 
 class BGPowerLawBinaryPopulation(BGBinaryPopulation, PowerLawBinaryPopulation):
-    param_names = ('fB', 'gamma', 'qmin', 'beta', 
-                   'beta_a', 'beta_b', 'rho_5', 'rho_20', 
+    param_names = ('fB', 'gamma', 'qmin', 'beta',
+                   'beta_a', 'beta_b', 'rho_5', 'rho_20',
                    'period_min', 'period_max')
 
-    default_params = {'fB':0.15, 'gamma':0.3, 'qmin':0.1, 
+    default_params = {'fB':0.15, 'gamma':0.3, 'qmin':0.1,
                       'beta':-0.75,
                       'beta_a':0.8, 'beta_b':2.0,
                       'rho_5':0.05, 'rho_20':0.005,
@@ -1496,8 +1499,8 @@ class BGPowerLawBinaryPopulation(BGBinaryPopulation, PowerLawBinaryPopulation):
 
 
 class TRILEGAL_BGBinaryPopulation(TRILEGAL_BinaryPopulation, BGBinaryPopulation):
-    
-    # This from BGBinaryPopulation; otherwise want to inherit from 
+
+    # This from BGBinaryPopulation; otherwise want to inherit from
     # TRILEGAL_BinaryPopulation
     __init__ = BGBinaryPopulation.__init__
 
@@ -1530,7 +1533,7 @@ class PlanetPopulation(KeplerBinaryPopulation):
         logging.debug('Generating planetary companions for {} stars...'.format(N))
 
         # need to create mass_B, radius_B, flux_ratio
-        
+
         # First, determine how many planets to assign per star.
         Nplanets = self._sample_Np(N)
         Ntot = Nplanets.sum()
@@ -1546,11 +1549,11 @@ class PlanetPopulation(KeplerBinaryPopulation):
         radius_B = self._sample_Rp(Ntot) #comes back in R_SUN
         mass_B = (radius_B/RSUN * REARTH)**2.06 * MEARTH/MSUN #in MSUN
         flux_ratio = 0. #could presumably give reflected/thermal emission here...
-        
+
         for c in self.secondary_props:
             self.stars.loc[:, c] = eval(c)
             self._mark_calculated(c)
-        
+
         logging.debug('{} planets generated.'.format(Ntot))
 
 
@@ -1576,11 +1579,11 @@ class PoissonPlanetPopulation(PlanetPopulation):
     param_names = ('N_pl', 'beta', 'alpha', 'Rp_min', 'Rp_max',
                    'period_min', 'period_max', 'beta_a', 'beta_b')
     default_params = {'N_pl':1.0, 'beta':-0.75, 'alpha':-1.6,
-                      'Rp_min':0.75, 'Rp_max':20, 
+                      'Rp_min':0.75, 'Rp_max':20,
                       'period_min':5., 'period_max':10000.,
                       'beta_a':0.8, 'beta_b':2.0}
 
-    
+
     def _sample_period(self, N):
         beta, lo, hi = self._get_params(['beta', 'period_min', 'period_max'])
         return draw_powerlaw(beta, (lo, hi), N=N)
@@ -1597,19 +1600,19 @@ class PoissonPlanetPopulation(PlanetPopulation):
 class PopulationMixture(object):
     def __init__(self, poplist):
         self.poplist = poplist
-        
+
     def __getitem__(self, name):
         for pop in self.poplist:
             if name==pop.name:
                 return pop
-        
+
     @property
     def param_names(self):
         p = []
         for pop in self.poplist:
             p += pop.param_names
         return list(set(p))
-    
+
     @property
     def params(self):
         d = {}
@@ -1621,18 +1624,18 @@ class PopulationMixture(object):
                     if d[k] != v:
                         raise ValueError('Parameter mismatch! ({})'.format(k))
         return d
-    
+
     def set_params(self, **kwargs):
         for pop in self.poplist:
             pop.set_params(**kwargs)
-                        
+
     def reset_params(self):
         for pop in self.poplist:
             pop.reset_params()
-                
+
     def train_trap(self, **kwargs):
         return [p._train_trap(**kwargs) for p in self.poplist]
-                
+
     def observe(self, **kwargs):
         obs = []
         for pop in self.poplist:
@@ -1640,7 +1643,7 @@ class PopulationMixture(object):
             if len(o)>0:
                 o.loc[:, 'population'] = pop.name
             obs.append(o)
-            
+
         return pd.concat(obs)
 
     def save(self, folder, overwrite=False):
@@ -1652,8 +1655,8 @@ class PopulationMixture(object):
         os.makedirs(folder)
         for pop in self.poplist:
             pop.save(os.path.join(folder,pop.name))
-        
-        
+
+
     @classmethod
     def load(cls, folder):
         names = os.listdir(folder)

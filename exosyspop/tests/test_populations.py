@@ -6,7 +6,10 @@ import os, os.path
 import tempfile
 TMP = tempfile.gettempdir()
 
-import cPickle as pickle
+try:
+    import cPickle as pickle
+except ImportError:
+    import pickle
 import pandas as pd
 import numpy as np
 
