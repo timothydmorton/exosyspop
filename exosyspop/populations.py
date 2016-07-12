@@ -1561,7 +1561,6 @@ class PlanetPopulation(KeplerBinaryPopulation):
         """
         Generating companion planets according to parameters
 
-        This uses standard independent Poisson process model.
         """
         self._ensure_radius()
         self._generate_planets(**kwargs)
@@ -1595,7 +1594,6 @@ class PoissonPlanetPopulation(PlanetPopulation):
     def _sample_Rp(self, N):
         alpha, lo, hi = self._get_params(['alpha', 'Rp_min', 'Rp_max'])
         return draw_powerlaw(alpha, (lo, hi), N=N) * REARTH/RSUN
-
 
 class PopulationMixture(object):
     def __init__(self, poplist):

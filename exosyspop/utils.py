@@ -10,6 +10,8 @@ AU = const.au.cgs.value
 DAY = 86400.
 REARTH = const.R_earth.cgs.value
 MEARTH = const.M_earth.cgs.value
+RJUP = const.R_jup.cgs.value
+MJUP = const.M_jup.cgs.value
 
 def draw_powerlaw(alpha, rng, N=1):
     """
