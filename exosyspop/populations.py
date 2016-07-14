@@ -584,8 +584,8 @@ class BinaryPopulation(object):
 
 
         # Determine closest approach
-        b_pri = a*np.cos(inc)/(radius_A*RSUN) * (1-ecc**2)/(1 + ecc*np.sin(w))
-        b_sec = a*np.cos(inc)/(radius_A*RSUN) * (1-ecc**2)/(1 - ecc*np.sin(w))
+        b_pri = aR * np.cos(inc) * (1-ecc**2)/(1 + ecc*np.sin(w))
+        b_sec = aR * np.cos(inc) * (1-ecc**2)/(1 - ecc*np.sin(w))
 
         R_tot = (radius_A + radius_B)/radius_A
         tra = (b_pri < R_tot)
@@ -1291,6 +1291,8 @@ class KeplerPopulation(BinaryPopulation):
                       10.5, 12.0, 12.5, 15.0)
 
     def get_noise(self, idx, T=3):
+        """ T is timescale in hours
+        """
         s = self.get_target(idx)
         dur_bin = np.atleast_1d(np.digitize(T, self.cdpp_durations))
         off_grid = False
